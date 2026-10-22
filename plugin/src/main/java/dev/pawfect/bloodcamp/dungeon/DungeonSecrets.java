@@ -14,6 +14,7 @@ import java.util.Set;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.format.TextDecoration;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -34,6 +35,8 @@ import org.bukkit.entity.Bat;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Zombie;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -70,16 +73,21 @@ final class DungeonSecrets {
     private final Map<java.util.UUID, Long> lastBoom = new HashMap<>();
     private final Set<Integer> waitingBats = new HashSet<>();
     private final Map<Long, Broken> broken = new LinkedHashMap<>();
+    private java.util.UUID mimic;
+    private boolean mimicKilled;
+    private final RoomLibrary.Mimic mimicLook;
 
     private record Broken(BlockState state, long restoreAt) {}
 
     private static final double BAT_SPAWN_RANGE = 12.0;
+    private static final int MIMIC_SPEED = 500;
     static final long BREAK_RESTORE_MS = 10_000;
 
-    DungeonSecrets(JavaPlugin plugin, World world, DungeonPlan plan) {
+    DungeonSecrets(JavaPlugin plugin, World world, DungeonPlan plan, RoomLibrary.Mimic mimicLook) {
         this.plugin = plugin;
         this.world = world;
         this.plan = plan;
+        this.mimicLook = mimicLook;
         this.tag = new NamespacedKey(plugin, "secret");
         this.found = new boolean[plan.secrets.size()];
         this.foundIn = new int[plan.placements.size()];
@@ -126,6 +134,10 @@ final class DungeonSecrets {
         }
         entities.clear();
         waitingBats.clear();
+        Entity spawnedMimic = mimic == null ? null : Bukkit.getEntity(mimic);
+        if (spawnedMimic != null) spawnedMimic.remove();
+        mimic = null;
+        mimicKilled = false;
         for (Player p : world.getPlayers()) stripItems(p, false);
         spawnEntities();
     }
@@ -354,9 +366,45 @@ final class DungeonSecrets {
             player.sendMessage(Component.text("This chest has already been searched!", NamedTextColor.RED));
             return;
         }
+        markFound(index);
+        if (index == plan.mimic) {
+            remember(block);
+            block.setType(Material.AIR, false);
+            spawnMimic(block);
+            return;
+        }
         if (block.getState() instanceof Lidded chest) chest.open();
         world.playSound(block.getLocation().add(0.5, 0.5, 0.5), Sound.BLOCK_CHEST_OPEN, 0.6f, 1f);
-        markFound(index);
+    }
+
+    private void spawnMimic(Block chest) {
+        Zombie zombie = world.spawn(chest.getLocation().add(0.5, 0, 0.5), Zombie.class, false, z -> {
+            z.setBaby();
+            AttributeInstance speed = z.getAttribute(Attribute.MOVEMENT_SPEED);
+            if (speed != null) speed.removeModifier(NamespacedKey.minecraft("baby"));
+            Speed.applyToMob(z, MIMIC_SPEED);
+            z.setShouldBurnInDay(false);
+            z.setPersistent(true);
+            z.setRemoveWhenFarAway(false);
+            if (mimicLook == null) return;
+            if (mimicLook.name() != null) {
+                z.customName(LegacyComponentSerializer.legacySection().deserialize(mimicLook.name()));
+                z.setCustomNameVisible(true);
+            }
+            if (z.getEquipment() == null) return;
+            mimicLook.equipment().forEach((slot, snbt) -> {
+                EquipmentSlot s = RoomViewer.SLOTS.get(slot);
+                ItemStack item = RoomViewer.item(snbt);
+                if (s == null || item == null) return;
+                z.getEquipment().setItem(s, item);
+                z.getEquipment().setDropChance(s, 0f);
+            });
+        });
+        mimic = zombie.getUniqueId();
+    }
+
+    boolean mimicKilled() {
+        return mimicKilled;
     }
 
     private void rememberIfToggled(Block block) {
@@ -376,6 +424,11 @@ final class DungeonSecrets {
     }
 
     boolean onDeath(Entity entity) {
+        if (entity.getUniqueId().equals(mimic)) {
+            mimic = null;
+            mimicKilled = true;
+            return true;
+        }
         Integer index = entity.getPersistentDataContainer().get(tag, PersistentDataType.INTEGER);
         if (index == null || index < 0 || index >= found.length) return false;
         entities.remove(entity.getUniqueId());

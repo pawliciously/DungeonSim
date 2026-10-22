@@ -23,9 +23,11 @@ final class RoomLibrary {
 
     private static final java.util.regex.Pattern NAME = java.util.regex.Pattern.compile("\"name\"\\s*:\\s*\"([^\"]*)\"");
 
-    record Secret(String name, String category, int x, int y, int z) {}
+    record Secret(String name, String category, int x, int y, int z, boolean itemChest) {}
 
     record RoomSecrets(int count, List<Secret> secrets) {}
+
+    record Mimic(String name, Map<String, String> equipment) {}
 
     private final Path root;
     private final Logger log;
@@ -33,6 +35,7 @@ final class RoomLibrary {
     private final Map<Path, RoomData> loaded = new ConcurrentHashMap<>();
     private List<BlockData[]> doorFrames = List.of();
     private Map<String, RoomSecrets> secrets = Map.of();
+    private Mimic mimic;
 
     RoomLibrary(Path root, Logger log) {
         this.root = root;
@@ -58,11 +61,15 @@ final class RoomLibrary {
             pools.put(pool, entries);
         }
         doorFrames = loadDoors(root.resolve("doors.json"));
-        secrets = loadSecrets(root.resolve("secrets.json"));
+        loadSecrets(root.resolve("secrets.json"));
     }
 
     synchronized RoomSecrets secrets(String room) {
         return secrets.get(room);
+    }
+
+    synchronized Mimic mimic() {
+        return mimic;
     }
 
     private static String idOf(Path poolDir, Path file) {
@@ -123,10 +130,13 @@ final class RoomLibrary {
         return data;
     }
 
-    private Map<String, RoomSecrets> loadSecrets(Path file) {
-        if (!Files.exists(file)) return Map.of();
+    private void loadSecrets(Path file) {
+        secrets = Map.of();
+        mimic = null;
+        if (!Files.exists(file)) return;
         try (Reader reader = Files.newBufferedReader(file)) {
-            JsonObject rooms = JsonParser.parseReader(reader).getAsJsonObject().getAsJsonObject("rooms");
+            JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
+            JsonObject rooms = root.getAsJsonObject("rooms");
             Map<String, RoomSecrets> out = new java.util.HashMap<>();
             for (var room : rooms.entrySet()) {
                 JsonObject json = room.getValue().getAsJsonObject();
@@ -134,15 +144,24 @@ final class RoomLibrary {
                 for (var element : json.getAsJsonArray("secrets")) {
                     JsonObject s = element.getAsJsonObject();
                     list.add(new Secret(s.get("name").getAsString(), s.get("category").getAsString(),
-                        s.get("x").getAsInt(), s.get("y").getAsInt(), s.get("z").getAsInt()));
+                        s.get("x").getAsInt(), s.get("y").getAsInt(), s.get("z").getAsInt(),
+                        s.has("itemChest") && s.get("itemChest").getAsBoolean()));
                 }
                 out.put(room.getKey(), new RoomSecrets(json.get("count").getAsInt(), List.copyOf(list)));
             }
-            return out;
+            secrets = out;
+            if (root.has("mimic")) mimic = mimic(root.getAsJsonObject("mimic"));
         } catch (IOException | RuntimeException e) {
             log.warning("Couldn't read secrets.json: " + e.getMessage());
-            return Map.of();
         }
+    }
+
+    private static Mimic mimic(JsonObject json) {
+        Map<String, String> equipment = new java.util.LinkedHashMap<>();
+        if (json.has("equipment")) {
+            for (var slot : json.getAsJsonObject("equipment").entrySet()) equipment.put(slot.getKey(), slot.getValue().getAsString());
+        }
+        return new Mimic(json.has("name") ? json.get("name").getAsString() : null, Map.copyOf(equipment));
     }
 
     private List<BlockData[]> loadDoors(Path file) {

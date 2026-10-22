@@ -99,6 +99,7 @@ final class DungeonPlan {
     final List<Secret> secrets = new ArrayList<>();
     final List<Head> heads = new ArrayList<>();
     final int[] secretTotal;
+    int mimic = -1;
 
     private final RoomLibrary library;
     private final Rng rng;
@@ -454,6 +455,7 @@ final class DungeonPlan {
 
     private void placeSecrets() {
         Rng secretRng = new Rng(layout.seed.rngSeed() ^ 0x2545F4914F6CDD1DL);
+        List<Integer> itemChests = new ArrayList<>();
         for (int pi = 0; pi < placements.size(); pi++) {
             Placement p = placements.get(pi);
             for (RoomData.Head h : p.data().heads) {
@@ -472,6 +474,7 @@ final class DungeonPlan {
                     case "chest" -> {
                         BlockData there = p.at(x, y, z);
                         if (there == null) writes.add(x, y, z, Bukkit.createBlockData("minecraft:chest[facing=" + chestFacing(p, x, y, z) + "]"));
+                        if (s.itemChest()) itemChests.add(secrets.size());
                         secrets.add(new Secret(SecretKind.CHEST, x, y, z, pi, s.name()));
                     }
                     case "wither" -> {
@@ -496,6 +499,19 @@ final class DungeonPlan {
                 secrets.add(new Secret(SecretKind.KEY, w[0], s.y(), w[1], pi, s.name()));
             }
         }
+        if (itemChests.isEmpty()) return;
+        mimic = secretRng.pick(itemChests);
+        Secret s = secrets.get(mimic);
+        writes.add(s.x(), s.y(), s.z(), trappedChest(placements.get(s.placement()), s.x(), s.y(), s.z()));
+    }
+
+    private static BlockData trappedChest(Placement p, int x, int y, int z) {
+        BlockData there = p.at(x, y, z);
+        BlockData chest = there != null && there.getMaterial() == Material.CHEST
+            ? Bukkit.createBlockData(there.getAsString().replace("minecraft:chest", "minecraft:trapped_chest"))
+            : Bukkit.createBlockData("minecraft:trapped_chest[facing=" + chestFacing(p, x, y, z) + "]");
+        if (chest instanceof org.bukkit.block.data.type.Chest half) half.setType(org.bukkit.block.data.type.Chest.Type.SINGLE);
+        return chest;
     }
 
     private static BlockData head(Rng rng) {

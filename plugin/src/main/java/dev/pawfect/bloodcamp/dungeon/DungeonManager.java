@@ -95,11 +95,11 @@ public final class DungeonManager implements Listener {
         boolean bloodKey, bloodDoorOpened;
         final Map<java.util.UUID, Integer> runSpeed = new HashMap<>();
 
-        Dungeon(JavaPlugin plugin, World world, Seed seed, DungeonPlan plan) {
+        Dungeon(JavaPlugin plugin, World world, Seed seed, DungeonPlan plan, RoomLibrary.Mimic mimic) {
             this.world = world;
             this.seed = seed;
             this.plan = plan;
-            this.secrets = new DungeonSecrets(plugin, world, plan);
+            this.secrets = new DungeonSecrets(plugin, world, plan, mimic);
             this.open = new boolean[plan.doors.size()];
             for (int i = 0; i < open.length; i++) open[i] = plan.doors.get(i).type() == DoorType.NORMAL;
             this.map = new DungeonMap(plan, secrets, open);
@@ -239,7 +239,7 @@ public final class DungeonManager implements Listener {
             return;
         }
         world.setDifficulty(Difficulty.NORMAL);
-        Dungeon dungeon = new Dungeon(plugin, world, seed, plan);
+        Dungeon dungeon = new Dungeon(plugin, world, seed, plan, library.mimic());
         dungeon.number = pendingNumber;
         pendingSeed = null;
         pendingNumber = -1;
@@ -728,7 +728,8 @@ public final class DungeonManager implements Listener {
         }
         int secretsPct = d.secrets.totalAll() == 0 ? 100 : 100 * d.secrets.totalFound() / d.secrets.totalAll();
         int clearedPct = Math.min(100, 100 * d.map.clearedCount() / Math.max(1, d.map.clearable()));
-        for (Player p : d.world.getPlayers()) HypixelChat.end(d.seed.floor(), clearedPct, secretsPct).forEach(p::sendMessage);
+        int bonus = d.secrets.mimicKilled() ? 1 : 0;
+        for (Player p : d.world.getPlayers()) HypixelChat.end(d.seed.floor(), clearedPct, secretsPct, bonus).forEach(p::sendMessage);
         lobby.refreshBoards();
     }
 

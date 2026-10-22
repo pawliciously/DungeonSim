@@ -85,10 +85,10 @@ final class HypixelChat {
             plain(Component.text("[BOSS] The Watcher", NamedTextColor.RED), Component.text(": Ah, we meet again. As I foresaw...", NamedTextColor.WHITE)));
     }
 
-    static List<Component> end(Floor floor, int clearedPercent, int secretsPercent) {
+    static List<Component> end(Floor floor, int clearedPercent, int secretsPercent, int bonus) {
         int skill = 20 + 80 * clearedPercent / 100;
         int explore = 60 * clearedPercent / 100 + 40 * Math.min(100, secretsPercent) / 100;
-        int score = skill + explore + 100;
+        int score = skill + explore + 100 + bonus;
         String grade;
         NamedTextColor color;
         if (score >= 300) { grade = "S+"; color = NamedTextColor.GOLD; }

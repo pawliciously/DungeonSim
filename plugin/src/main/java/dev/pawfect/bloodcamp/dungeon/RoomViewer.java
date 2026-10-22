@@ -66,7 +66,7 @@ import org.bukkit.scheduler.BukkitTask;
 final class RoomViewer implements Listener {
     static final String PREFIX = "ds_view_";
     private static final long BUILD_NANOS_PER_TICK = 30_000_000L;
-    private static final Map<String, EquipmentSlot> SLOTS = Map.of(
+    static final Map<String, EquipmentSlot> SLOTS = Map.of(
         "mainhand", EquipmentSlot.HAND, "offhand", EquipmentSlot.OFF_HAND, "head", EquipmentSlot.HEAD,
         "chest", EquipmentSlot.CHEST, "legs", EquipmentSlot.LEGS, "feet", EquipmentSlot.FEET);
 
@@ -421,7 +421,7 @@ final class RoomViewer implements Listener {
         }
     }
 
-    private static ItemStack item(String snbt) {
+    static ItemStack item(String snbt) {
         try {
             CompoundTag tag = TagParser.parseCompoundFully(snbt);
             var ops = RegistryOps.create(NbtOps.INSTANCE, MinecraftServer.getServer().registryAccess());

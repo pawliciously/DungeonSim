@@ -31,10 +31,6 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 
-/**
- * Per-player kit layout: which kit items to bring and which inventory slot each goes in. Edited in a chest
- * laid out like the inventory (3 main rows, then the hotbar), a "leave at home" row, and buttons.
- */
 final class Loadout implements Listener {
     private static final TextColor TITLE = TextColor.color(0xF2C14E);
     private static final TextColor LABEL = TextColor.color(0x9AA0A6);
@@ -42,9 +38,9 @@ final class Loadout implements Listener {
     private static final TextColor GOOD = TextColor.color(0x7BD88F);
     private static final TextColor BAD = TextColor.color(0xF2766B);
 
-    /** Kit item tags (DungeonSecrets.tagOf) in default order, and their default slots. */
-    static final byte[] TAGS = {2, 5, 7, 9, 8, 6, 4};
-    private static final int[] DEFAULT_SLOTS = {0, 1, 2, 3, 4, 5, 8};
+    static final byte[] TAGS = {2, 5, 7, 9, 8, 6, 10, 4};
+    private static final int[] DEFAULT_SLOTS = {0, 1, 2, 3, 4, 5, 6, 8};
+    private static final byte[] ADDED_LATER = {10};
 
     private static final int HOME_START = 36, HOME_END = 44;
     private static final int INFO = 45, RESET = 47, SAVE = 49, CANCEL = 51;
@@ -73,7 +69,6 @@ final class Loadout implements Listener {
         Bukkit.getPluginManager().registerEvents(this, plugin);
     }
 
-    /** Tag to player inventory slot. Tags left out stay at home. */
     static Map<Byte, Integer> layout(JavaPlugin plugin, Player player) {
         Map<Byte, Integer> out = new LinkedHashMap<>();
         String saved = player.getPersistentDataContainer().get(new NamespacedKey(plugin, "loadout"), PersistentDataType.STRING);
@@ -81,14 +76,21 @@ final class Loadout implements Listener {
             for (int i = 0; i < TAGS.length; i++) out.put(TAGS[i], DEFAULT_SLOTS[i]);
             return out;
         }
-        if (saved.isEmpty()) return out;
-        for (String part : saved.split(",")) {
+        java.util.Set<Byte> mentioned = new java.util.HashSet<>();
+        if (!saved.isEmpty()) for (String part : saved.split(",")) {
             String[] kv = part.split(":");
             try {
                 byte tag = Byte.parseByte(kv[0]);
                 int slot = Integer.parseInt(kv[1]);
+                mentioned.add(tag);
                 if (slot >= 0 && slot < 36 && !out.containsValue(slot)) out.put(tag, slot);
             } catch (RuntimeException ignored) {
+            }
+        }
+        for (byte tag : ADDED_LATER) {
+            if (mentioned.contains(tag)) continue;
+            for (int i = 0; i < TAGS.length; i++) {
+                if (TAGS[i] == tag && !out.containsValue(DEFAULT_SLOTS[i])) out.put(tag, DEFAULT_SLOTS[i]);
             }
         }
         return out;
@@ -154,7 +156,6 @@ final class Loadout implements Listener {
             }
             return;
         }
-        // Only plain left-click pick up / put down / swap inside the editor. Nothing goes in or out of the real inventory.
         boolean allowed = top && event.getClick() == ClickType.LEFT && (event.getAction() == InventoryAction.PICKUP_ALL
             || event.getAction() == InventoryAction.PLACE_ALL || event.getAction() == InventoryAction.SWAP_WITH_CURSOR
             || event.getAction() == InventoryAction.NOTHING);
@@ -183,6 +184,12 @@ final class Loadout implements Listener {
             if (!saved.isEmpty()) saved.append(',');
             saved.append(tag).append(':').append(toPlayer(gui));
             brought++;
+        }
+        for (int gui = HOME_START; gui <= HOME_END; gui++) {
+            byte tag = DungeonSecrets.tagOf(plugin, inv.getItem(gui));
+            if (tag == 0) continue;
+            if (!saved.isEmpty()) saved.append(',');
+            saved.append(tag).append(":-1");
         }
         player.getPersistentDataContainer().set(key, PersistentDataType.STRING, saved.toString());
         player.sendMessage(Component.text("Loadout saved", GOOD).append(Component.text(" (" + brought + "/" + TAGS.length + " items).", LABEL)));

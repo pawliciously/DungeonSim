@@ -45,6 +45,7 @@ final class DungeonMap extends MapRenderer {
     private final int[] depth;
     private final int[] placementOf;
     private final Map<Integer, List<DoorType>> keys = new HashMap<>();
+    private boolean revealed;
     java.util.function.IntConsumer onOpen = room -> { };
     private final Map<UUID, Integer> drawnFor = new HashMap<>();
     private byte[] pixels;
@@ -156,6 +157,19 @@ final class DungeonMap extends MapRenderer {
         return opened[room];
     }
 
+    boolean isRevealed() {
+        return revealed;
+    }
+
+    void reveal() {
+        revealed = true;
+        version++;
+    }
+
+    private boolean shown(int room) {
+        return revealed || opened[room];
+    }
+
     ItemStack item(JavaPlugin plugin, World world) {
         if (view == null) {
             view = Bukkit.createMap(world);
@@ -214,7 +228,7 @@ final class DungeonMap extends MapRenderer {
         int w = layout.width;
 
         for (Layout.Room room : layout.rooms) {
-            if (!opened[room.id()]) continue;
+            if (!shown(room.id())) continue;
             byte color = color(room.type());
             for (int cell : room.cells()) {
                 int cx = cell % w, cz = cell / w;
@@ -230,7 +244,7 @@ final class DungeonMap extends MapRenderer {
 
         for (int i = 0; i < layout.doors.size(); i++) {
             Layout.Door door = layout.doors.get(i);
-            boolean a = opened[door.roomA()], b = opened[door.roomB()];
+            boolean a = shown(door.roomA()), b = shown(door.roomB());
             if (!a && !b) continue;
             int cellA = Math.min(door.cellA(), door.cellB()), cellB = Math.max(door.cellA(), door.cellB());
             byte color;

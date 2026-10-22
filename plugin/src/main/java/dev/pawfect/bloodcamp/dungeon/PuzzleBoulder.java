@@ -11,17 +11,16 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Player;
 
-/**
- * Boulder: a 7x6 grid of 3x3 boxes between you and the chest. Buttons on a box push it one cell away from
- * the button, only where the cell behind it is free. Open the chest at the far end to solve.
- */
 final class PuzzleBoulder extends Puzzle {
     private static final int COLS = 7, ROWS = 6;
     private static final int Y0 = 64;
     private static final int CHEST_X = 15, CHEST_Y = 66, CHEST_Z = 29;
     private static final int[][] DIRS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-    // The layout Hypixel had when the room was captured, row 0 (far side) first, col 0 is x24.
-    private static final String[] CAPTURED = {".......", "XXXXXX.", "X..X.X.", ".XXX...", "..X.XXX", "....XX."};
+    private static final String[] LAYOUTS = {
+        "010000010111101001010011100000101110000111", "100000111101111011101110001110111010000000",
+        "110001110111011010001100111111100011000001", "100100101000100010100010101000101000100010",
+        "000000011111101001010011100000101110000110", "000000001111100100010010001011111110000000",
+        "000000010101110101010011010000010100000000", "100101001000000010101001111101010101010101"};
 
     private final boolean[][] box = new boolean[ROWS][COLS];
     private final boolean[][] jungle = new boolean[ROWS][COLS];
@@ -39,33 +38,12 @@ final class PuzzleBoulder extends Puzzle {
     }
 
     @Override
-    void begin() {
-        if (random.nextInt(3) == 0) {
-            for (int r = 0; r < ROWS; r++) for (int c = 0; c < COLS; c++) box[r][c] = CAPTURED[r].charAt(c) == 'X';
-            if (solve(mask()) < 1) generate();
-        } else {
-            generate();
-        }
+    void prepare() {
+        String layout = LAYOUTS[random.nextInt(LAYOUTS.length)];
+        for (int r = 0; r < ROWS; r++) for (int c = 0; c < COLS; c++) box[r][c] = layout.charAt(r * COLS + c) == '1';
         for (int r = 0; r < ROWS; r++) for (int c = 0; c < COLS; c++) jungle[r][c] = random.nextBoolean();
         draw();
         set(CHEST_X, CHEST_Y, CHEST_Z, state("minecraft:chest[facing=north]"));
-    }
-
-    private void generate() {
-        for (int attempt = 0; attempt < 400; attempt++) {
-            for (boolean[] row : box) java.util.Arrays.fill(row, false);
-            int count = 15 + random.nextInt(5);
-            for (int placed = 0; placed < count; ) {
-                int r = 1 + random.nextInt(ROWS - 1), c = random.nextInt(COLS);
-                if (!box[r][c]) {
-                    box[r][c] = true;
-                    placed++;
-                }
-            }
-            int pushes = solve(mask());
-            if (pushes >= 3) return;
-        }
-        for (int r = 0; r < ROWS; r++) for (int c = 0; c < COLS; c++) box[r][c] = CAPTURED[r].charAt(c) == 'X';
     }
 
     private long mask() {
@@ -78,7 +56,6 @@ final class PuzzleBoulder extends Puzzle {
         return r < ROWS && (mask >> (r * COLS + c) & 1) != 0;
     }
 
-    /** Cells the player can walk to: the board plus the free row they start on (row 6). */
     private static long reach(long mask, int fromR, int fromC) {
         long seen = 1L << (fromR * COLS + fromC);
         ArrayDeque<int[]> queue = new ArrayDeque<>();
@@ -97,7 +74,6 @@ final class PuzzleBoulder extends Puzzle {
         return seen;
     }
 
-    /** Fewest pushes until the far row is reachable, or -1 when it can't be. */
     private static int solve(long start) {
         record Node(long mask, int r, int c, int depth) {}
         Set<Long> seen = new HashSet<>();
@@ -145,7 +121,6 @@ final class PuzzleBoulder extends Puzzle {
         for (int r = 0; r < ROWS; r++) for (int c = 0; c < COLS; c++) {
             if (!box[r][c]) continue;
             for (int[] d : DIRS) {
-                // d is the push direction in board cells, (ux, uz) the same in room blocks. The button sits on the opposite face.
                 int ux = -d[1], uz = -d[0];
                 int faceX = cx(c) - 2 * ux, faceZ = cz(r) - 2 * uz;
                 int standR = r - d[0], standC = c - d[1];

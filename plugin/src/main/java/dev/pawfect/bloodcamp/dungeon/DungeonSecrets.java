@@ -48,7 +48,7 @@ import org.bukkit.util.Vector;
 final class DungeonSecrets {
     private static final double BLAST_RADIUS = 5.0;
     private static final int BLAST_MAX_BLOCKS = 250;
-    private static final long SUPERBOOM_COOLDOWN_MS = 300;
+    private static final long SUPERBOOM_COOLDOWN_MS = 1000;
 
     private record SecretItem(String id, String name, Material material, NamedTextColor color) {}
 
@@ -60,39 +60,65 @@ final class DungeonSecrets {
         new SecretItem("DEFUSE_KIT", "Defuse Kit", Material.TRIPWIRE_HOOK, NamedTextColor.WHITE),
         new SecretItem("TREASURE_TALISMAN", "Treasure Talisman", Material.PLAYER_HEAD, NamedTextColor.BLUE));
 
+    record Setup(List<Secret> secrets, int[] totals, List<DungeonPlan.Head> heads, long seed, int[] chunks, int mimic, RoomLibrary.Mimic mimicLook) {
+        Setup(List<Secret> secrets, int[] totals, List<DungeonPlan.Head> heads, long seed, int[] chunks) {
+            this(secrets, totals, heads, seed, chunks, -1, null);
+        }
+        static Setup of(DungeonPlan plan, RoomLibrary.Mimic mimicLook) {
+            int min = DungeonPlan.GRID >> 4;
+            int maxX = (DungeonPlan.GRID + plan.layout.width * DungeonPlan.CELL) >> 4;
+            int maxZ = (DungeonPlan.GRID + plan.layout.height * DungeonPlan.CELL) >> 4;
+            return new Setup(plan.secrets, plan.secretTotal, plan.heads, plan.layout.seed.rngSeed(), new int[] {min, min, maxX, maxZ}, plan.mimic, mimicLook);
+        }
+    }
+
     private final JavaPlugin plugin;
     private final World world;
-    private final DungeonPlan plan;
+    private final List<Secret> secrets;
+    private final int[] totals;
+    private final List<DungeonPlan.Head> heads;
+    private final long seed;
+    private final int[] chunks;
     private final NamespacedKey tag;
     private final boolean[] found;
+    private final boolean[] spawned;
     private final int[] foundIn;
     private final Map<Long, Integer> blockSecrets = new HashMap<>();
     private final Map<Long, Integer> keySlots = new HashMap<>();
     private final Map<java.util.UUID, Integer> entities = new HashMap<>();
     private final Map<Long, BlockState> changed = new LinkedHashMap<>();
     private final Map<java.util.UUID, Long> lastBoom = new HashMap<>();
-    private final Set<Integer> waitingBats = new HashSet<>();
     private final Map<Long, Broken> broken = new LinkedHashMap<>();
     private java.util.UUID mimic;
     private boolean mimicKilled;
     private final RoomLibrary.Mimic mimicLook;
+    private final int mimicIndex;
 
     private record Broken(BlockState state, long restoreAt) {}
 
-    private static final double BAT_SPAWN_RANGE = 12.0;
     private static final int MIMIC_SPEED = 500;
     static final long BREAK_RESTORE_MS = 10_000;
 
     DungeonSecrets(JavaPlugin plugin, World world, DungeonPlan plan, RoomLibrary.Mimic mimicLook) {
+        this(plugin, world, Setup.of(plan, mimicLook));
+    }
+
+    DungeonSecrets(JavaPlugin plugin, World world, Setup setup) {
         this.plugin = plugin;
         this.world = world;
-        this.plan = plan;
-        this.mimicLook = mimicLook;
-        this.tag = new NamespacedKey(plugin, "secret");
-        this.found = new boolean[plan.secrets.size()];
-        this.foundIn = new int[plan.placements.size()];
-        for (int i = 0; i < plan.secrets.size(); i++) {
-            Secret s = plan.secrets.get(i);
+        this.secrets = setup.secrets();
+        this.totals = setup.totals();
+        this.heads = setup.heads();
+        this.seed = setup.seed();
+        this.chunks = setup.chunks();
+        this.mimicIndex = setup.mimic();
+        this.mimicLook = setup.mimicLook();
+        this.tag = secretTag(plugin);
+        this.found = new boolean[secrets.size()];
+        this.spawned = new boolean[secrets.size()];
+        this.foundIn = new int[totals.length];
+        for (int i = 0; i < secrets.size(); i++) {
+            Secret s = secrets.get(i);
             switch (s.kind()) {
                 case CHEST, WITHER, KEY -> blockSecrets.put(key(s.x(), s.y(), s.z()), i);
                 case KEY_SLOT -> {
@@ -108,13 +134,15 @@ final class DungeonSecrets {
         return new NamespacedKey(plugin, "item");
     }
 
+    static NamespacedKey secretTag(JavaPlugin plugin) {
+        return new NamespacedKey(plugin, "secret");
+    }
+
     void start() {
-        for (DungeonPlan.Head h : plan.heads) h.profile().applyTo(world.getBlockAt(h.x(), h.y(), h.z()));
-        int min = DungeonPlan.GRID >> 4;
-        int maxX = (DungeonPlan.GRID + plan.layout.width * DungeonPlan.CELL) >> 4;
-        int maxZ = (DungeonPlan.GRID + plan.layout.height * DungeonPlan.CELL) >> 4;
-        for (int cx = min; cx <= maxX; cx++) for (int cz = min; cz <= maxZ; cz++) world.addPluginChunkTicket(cx, cz, plugin);
-        spawnEntities();
+        for (DungeonPlan.Head h : heads) h.profile().applyTo(world.getBlockAt(h.x(), h.y(), h.z()));
+        if (chunks != null) {
+            for (int cx = chunks[0]; cx <= chunks[2]; cx++) for (int cz = chunks[1]; cz <= chunks[3]; cz++) world.addPluginChunkTicket(cx, cz, plugin);
+        }
     }
 
     void reset() {
@@ -123,9 +151,12 @@ final class DungeonSecrets {
         changed.clear();
         for (BlockState state : states) state.update(true, false);
         for (int i = 0; i < found.length; i++) {
-            Secret s = plan.secrets.get(i);
-            if (s.kind() == SecretKind.CHEST && world.getBlockAt(s.x(), s.y(), s.z()).getState() instanceof Lidded chest) chest.close();
+            Secret s = secrets.get(i);
+            Block block = world.getBlockAt(s.x(), s.y(), s.z());
+            if (s.block() != null && (s.kind() == SecretKind.CHEST || s.kind() == SecretKind.WITHER)) block.setType(Material.AIR, false);
+            else if (s.kind() == SecretKind.CHEST && block.getState() instanceof Lidded chest) chest.close();
             found[i] = false;
+            spawned[i] = false;
         }
         java.util.Arrays.fill(foundIn, 0);
         for (java.util.UUID id : entities.keySet()) {
@@ -133,23 +164,52 @@ final class DungeonSecrets {
             if (e != null) e.remove();
         }
         entities.clear();
-        waitingBats.clear();
         Entity spawnedMimic = mimic == null ? null : Bukkit.getEntity(mimic);
         if (spawnedMimic != null) spawnedMimic.remove();
         mimic = null;
         mimicKilled = false;
         for (Player p : world.getPlayers()) stripItems(p, false);
-        spawnEntities();
     }
 
-    private void spawnEntities() {
-        Rng rng = new Rng(plan.layout.seed.rngSeed() ^ 0x6A09E667F3BCC909L);
-        for (int i = 0; i < plan.secrets.size(); i++) {
-            Secret s = plan.secrets.get(i);
-            final int index = i;
-            Location at = new Location(world, s.x() + 0.5, s.y() + 0.1, s.z() + 0.5);
-            if (s.kind() == SecretKind.ITEM) {
-                SecretItem pick = rng.pick(SECRET_ITEMS);
+    void spawnNearby(java.util.function.IntPredicate placementOpen) {
+        List<Player> players = world.getPlayers();
+        if (players.isEmpty()) return;
+        for (int i = 0; i < secrets.size(); i++) {
+            if (spawned[i] || found[i]) continue;
+            Secret s = secrets.get(i);
+            if (s.radius() <= 0) continue;
+            if (!placementOpen.test(s.placement()) || !anyoneInside(players, s)) continue;
+            spawned[i] = true;
+            spawn(i, s);
+        }
+    }
+
+    private static boolean anyoneInside(List<Player> players, Secret s) {
+        double r = s.radius(), cx = s.x() + 0.5, cy = s.y() + 0.5, cz = s.z() + 0.5;
+        for (Player p : players) {
+            if (p.getGameMode() == org.bukkit.GameMode.SPECTATOR) continue;
+            org.bukkit.util.BoundingBox box = p.getBoundingBox();
+            if (box.getMaxX() >= cx - r && box.getMinX() <= cx + r && box.getMaxY() >= cy - r && box.getMinY() <= cy + r
+                && box.getMaxZ() >= cz - r && box.getMinZ() <= cz + r) return true;
+        }
+        return false;
+    }
+
+    private void spawn(int index, Secret s) {
+        Block block = world.getBlockAt(s.x(), s.y(), s.z());
+        Location at = new Location(world, s.x() + 0.5, s.y() + 0.1, s.z() + 0.5);
+        switch (s.kind()) {
+            case CHEST -> {
+                if (s.block() != null && block.getType().isAir()) block.setBlockData(s.block(), false);
+            }
+            case WITHER -> {
+                if (s.block() != null && block.getType().isAir()) {
+                    block.setBlockData(s.block(), false);
+                    HeadProfile.WITHER_ESSENCE.applyTo(block);
+                }
+            }
+            case ITEM -> {
+                SecretItem pick = new Rng(seed ^ 0x6A09E667F3BCC909L ^ (index * 0x9E3779B97F4A7C15L)).pick(SECRET_ITEMS);
                 Item item = world.dropItem(at, secretItem(pick), it -> {
                     it.setVelocity(new Vector());
                     it.setPickupDelay(0);
@@ -158,39 +218,25 @@ final class DungeonSecrets {
                     it.setPersistent(true);
                     it.getPersistentDataContainer().set(tag, PersistentDataType.INTEGER, index);
                 });
-                entities.put(item.getUniqueId(), i);
-            } else if (s.kind() == SecretKind.BAT) {
-                waitingBats.add(i);
+                entities.put(item.getUniqueId(), index);
             }
+            case BAT -> spawnBat(index, at);
+            default -> { }
         }
     }
 
-    void spawnNearbyBats(java.util.function.IntPredicate placementOpened) {
-        if (waitingBats.isEmpty()) return;
-        List<Player> players = world.getPlayers();
-        for (java.util.Iterator<Integer> it = waitingBats.iterator(); it.hasNext(); ) {
-            int index = it.next();
-            Secret s = plan.secrets.get(index);
-            if (found[index] || !placementOpened.test(s.placement())) continue;
-            Location at = new Location(world, s.x() + 0.5, s.y() + 0.1, s.z() + 0.5);
-            boolean near = false;
-            for (Player p : players) {
-                if (p.getLocation().distanceSquared(at) <= BAT_SPAWN_RANGE * BAT_SPAWN_RANGE) near = true;
-            }
-            if (!near) continue;
-            it.remove();
-            Bat bat = world.spawn(at, Bat.class, b -> {
-                b.setGlowing(true);
-                b.setPersistent(true);
-                b.setRemoveWhenFarAway(false);
-                b.setAwake(true);
-                AttributeInstance health = b.getAttribute(Attribute.MAX_HEALTH);
-                if (health != null) health.setBaseValue(1);
-                b.setHealth(1);
-                b.getPersistentDataContainer().set(tag, PersistentDataType.INTEGER, index);
-            });
-            entities.put(bat.getUniqueId(), index);
-        }
+    private void spawnBat(int index, Location at) {
+        Bat bat = world.spawn(at, Bat.class, b -> {
+            b.setGlowing(true);
+            b.setPersistent(true);
+            b.setRemoveWhenFarAway(false);
+            b.setAwake(true);
+            AttributeInstance health = b.getAttribute(Attribute.MAX_HEALTH);
+            if (health != null) health.setBaseValue(1);
+            b.setHealth(1);
+            b.getPersistentDataContainer().set(tag, PersistentDataType.INTEGER, index);
+        });
+        entities.put(bat.getUniqueId(), index);
     }
 
     boolean breakTemporarily(Block block) {
@@ -204,6 +250,8 @@ final class DungeonSecrets {
         world.spawnParticle(Particle.BLOCK, block.getLocation().add(0.5, 0.5, 0.5), 30, 0.3, 0.3, 0.3, block.getBlockData());
         world.playSound(block.getLocation().add(0.5, 0.5, 0.5), block.getBlockData().getSoundGroup().getBreakSound(), 1f, 0.8f);
         block.setType(Material.AIR, false);
+        BlockData air = Material.AIR.createBlockData();
+        for (Player p : world.getPlayers()) p.sendBlockChange(block.getLocation(), air);
         return true;
     }
 
@@ -268,7 +316,7 @@ final class DungeonSecrets {
         PlayerInventory inv = player.getInventory();
         for (int slot = 0; slot < inv.getSize(); slot++) {
             byte t = tagOf(plugin, inv.getItem(slot));
-            if (t == 1 || t == 3 || t == 4 || (superboomToo && (t == 2 || (t >= 5 && t <= 9)))) inv.setItem(slot, null);
+            if (t == 1 || t == 3 || t == 4 || (superboomToo && (t == 2 || (t >= 5 && t <= 10)))) inv.setItem(slot, null);
         }
     }
 
@@ -285,11 +333,11 @@ final class DungeonSecrets {
     }
 
     int total(int placement) {
-        return plan.secretTotal[placement];
+        return totals[placement];
     }
 
     int found(int placement) {
-        return Math.min(foundIn[placement], plan.secretTotal[placement]);
+        return Math.min(foundIn[placement], totals[placement]);
     }
 
     int totalFound() {
@@ -300,14 +348,14 @@ final class DungeonSecrets {
 
     int totalAll() {
         int n = 0;
-        for (int t : plan.secretTotal) n += t;
+        for (int t : totals) n += t;
         return n;
     }
 
     private void markFound(int index) {
         if (found[index]) return;
         found[index] = true;
-        Secret s = plan.secrets.get(index);
+        Secret s = secrets.get(index);
         if (s.kind().counted()) foundIn[s.placement()]++;
     }
 
@@ -315,7 +363,7 @@ final class DungeonSecrets {
         long key = key(block.getX(), block.getY(), block.getZ());
         Integer index = blockSecrets.get(key);
         if (index != null && rightClick) {
-            Secret s = plan.secrets.get(index);
+            Secret s = secrets.get(index);
             switch (s.kind()) {
                 case CHEST -> openChest(player, block, index);
                 case WITHER -> {
@@ -341,7 +389,7 @@ final class DungeonSecrets {
         }
         Integer slot = keySlots.get(key);
         if (slot != null && rightClick && tagOf(plugin, player.getInventory().getItemInMainHand()) == 3) {
-            Secret s = plan.secrets.get(slot);
+            Secret s = secrets.get(slot);
             Block head = world.getBlockAt(s.x(), s.y(), s.z());
             if (!head.getType().isAir()) return false;
             remember(head);
@@ -367,7 +415,7 @@ final class DungeonSecrets {
             return;
         }
         markFound(index);
-        if (index == plan.mimic) {
+        if (index == mimicIndex) {
             remember(block);
             block.setType(Material.AIR, false);
             spawnMimic(block);
@@ -413,6 +461,31 @@ final class DungeonSecrets {
         remember(block);
         if (data instanceof Door door) {
             remember(block.getRelative(door.getHalf() == Bisected.Half.BOTTOM ? org.bukkit.block.BlockFace.UP : org.bukkit.block.BlockFace.DOWN));
+        }
+    }
+
+    private static final double PICKUP_RANGE = 3.0;
+
+    void pickupNearby() {
+        if (entities.isEmpty()) return;
+        for (Map.Entry<java.util.UUID, Integer> e : new ArrayList<>(entities.entrySet())) {
+            if (secrets.get(e.getValue()).kind() != SecretKind.ITEM) continue;
+            if (!(Bukkit.getEntity(e.getKey()) instanceof Item item) || !item.isValid()) continue;
+            Vector at = item.getLocation().toVector();
+            for (Player p : world.getPlayers()) {
+                if (p.getGameMode() == org.bukkit.GameMode.SPECTATOR) continue;
+                org.bukkit.util.BoundingBox box = p.getBoundingBox();
+                double dx = Math.max(0, Math.max(box.getMinX() - at.getX(), at.getX() - box.getMaxX()));
+                double dy = Math.max(0, Math.max(box.getMinY() - at.getY(), at.getY() - box.getMaxY()));
+                double dz = Math.max(0, Math.max(box.getMinZ() - at.getZ(), at.getZ() - box.getMaxZ()));
+                if (dx * dx + dy * dy + dz * dz > PICKUP_RANGE * PICKUP_RANGE) continue;
+                p.getInventory().addItem(item.getItemStack());
+                p.playPickupItemAnimation(item);
+                world.playSound(item.getLocation(), Sound.ENTITY_ITEM_PICKUP, 0.2f, 1.6f + (float) Math.random() * 0.4f);
+                onPickup(item);
+                item.remove();
+                break;
+            }
         }
     }
 

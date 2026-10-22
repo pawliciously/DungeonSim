@@ -8,8 +8,10 @@ import dev.pawfect.bloodcamp.gen.Rng;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
@@ -58,7 +60,9 @@ final class DungeonPlan {
         }
     }
 
-    record Secret(SecretKind kind, int x, int y, int z, int placement, String name) {}
+    record Secret(SecretKind kind, int x, int y, int z, int placement, String name, double radius, BlockData block) {}
+
+    static final double SPAWN_RADIUS = 8.0;
 
     record Head(int x, int y, int z, HeadProfile profile) {}
 
@@ -106,6 +110,10 @@ final class DungeonPlan {
     private final Placement[] byRoom;
 
     DungeonPlan(Layout layout, RoomLibrary library) throws IOException {
+        this(layout, library, List.of());
+    }
+
+    DungeonPlan(Layout layout, RoomLibrary library, List<RoomLibrary.Entry> forced) throws IOException {
         this.layout = layout;
         this.library = library;
         this.rng = new Rng(layout.seed.rngSeed() ^ 0x5DEECE66DL);
@@ -117,8 +125,17 @@ final class DungeonPlan {
         entranceDoor = entrance;
 
         Set<String> used = new HashSet<>();
+        Map<Integer, RoomLibrary.Entry> forcedAt = new HashMap<>();
+        for (RoomLibrary.Entry entry : forced) {
+            String pool = library.poolOf(entry);
+            List<Layout.Room> free = layout.rooms.stream().filter(r -> fits(pool, r) && !forcedAt.containsKey(r.id())).toList();
+            if (free.isEmpty()) throw new IllegalStateException("No free " + pool + " room for " + entry.name());
+            forcedAt.put(rng.pick(free).id(), entry);
+            used.add(entry.id());
+        }
         for (Layout.Room room : layout.rooms) {
-            Placement p = place(room, used);
+            RoomLibrary.Entry force = forcedAt.get(room.id());
+            Placement p = force == null ? place(room, used) : place(room, List.of(force), used);
             placements.add(p);
             byRoom[room.id()] = p;
         }
@@ -191,6 +208,36 @@ final class DungeonPlan {
         return new Door(x, z, alongX, d.type(), d.roomA(), d.roomB());
     }
 
+    static boolean fits(String pool, Layout.Room room) {
+        return switch (pool) {
+            case "puzzle" -> room.type() == RoomType.PUZZLE;
+            case "trap" -> room.type() == RoomType.TRAP;
+            case "miniboss" -> room.type() == RoomType.MINIBOSS;
+            default -> room.type() == RoomType.NORMAL && pool.equals(poolOf(room.shape()));
+        };
+    }
+
+    private static String poolOf(Shape shape) {
+        return switch (shape) {
+            case S1X1 -> "1x1";
+            case S1X2 -> "1x2";
+            case S1X3 -> "1x3";
+            case S1X4 -> "1x4";
+            case S2X2 -> "2x2";
+            case L -> "l-shape";
+        };
+    }
+
+    static boolean canHold(Layout layout, List<String> pools) {
+        Map<String, Integer> want = new HashMap<>();
+        for (String pool : pools) want.merge(pool, 1, Integer::sum);
+        for (Map.Entry<String, Integer> e : want.entrySet()) {
+            long have = layout.rooms.stream().filter(r -> fits(e.getKey(), r)).count();
+            if (have < e.getValue()) return false;
+        }
+        return true;
+    }
+
     private Placement place(Layout.Room room, Set<String> used) throws IOException {
         String pool = switch (room.type()) {
             case NORMAL -> switch (room.shape()) {
@@ -212,6 +259,10 @@ final class DungeonPlan {
             options.removeIf(e -> !e.id().equals(want));
         }
         if (options.isEmpty()) throw new IllegalStateException("No " + (pool.equals("special") ? room.type().name().toLowerCase() : pool) + " rooms uploaded");
+        return place(room, options, used);
+    }
+
+    private Placement place(Layout.Room room, List<RoomLibrary.Entry> options, Set<String> used) throws IOException {
         if (room.type() == RoomType.NORMAL && room.shape() == Shape.S1X1) return placeOneByOne(room, options, used);
         List<RoomLibrary.Entry> fresh = options.stream().filter(e -> !used.contains(e.id())).toList();
         RoomLibrary.Entry pick = rng.pick(fresh.isEmpty() ? options : fresh);
@@ -359,16 +410,22 @@ final class DungeonPlan {
 
     private void writeRoom(Placement p) {
         RoomData d = p.data();
+        boolean l = p.room().shape() == Shape.L;
         for (int y = 0; y < d.sy; y++) {
             for (int z = 0; z < d.sz; z++) {
                 for (int x = 0; x < d.sx; x++) {
                     int index = d.data[(y * d.sz + z) * d.sx + x];
                     if (d.isAir(index)) continue;
+                    if (l && outsideL(d.ox + x, d.oz + z)) continue;
                     int[] world = p.toWorld(d.ox + x, d.oz + z);
                     writes.add(world[0], d.oy + y, world[1], d.state(index, p.turns()));
                 }
             }
         }
+    }
+
+    static boolean outsideL(int rx, int rz) {
+        return (rx >= CELL && rz < CELL) || (rx == CELL - 1 && rz < CELL - 1);
     }
 
     private void patchUnusedDoorways(Placement p) {
@@ -473,19 +530,24 @@ final class DungeonPlan {
                 switch (s.category()) {
                     case "chest" -> {
                         BlockData there = p.at(x, y, z);
-                        if (there == null) writes.add(x, y, z, Bukkit.createBlockData("minecraft:chest[facing=" + chestFacing(p, x, y, z) + "]"));
+                        BlockData chest = there == null ? Bukkit.createBlockData("minecraft:chest[facing=" + chestFacing(p, x, y, z) + "]")
+                            : there.getMaterial() == Material.CHEST || there.getMaterial() == Material.TRAPPED_CHEST ? there : null;
+                        if (chest != null) writes.add(x, y, z, AIR);
                         if (s.itemChest()) itemChests.add(secrets.size());
-                        secrets.add(new Secret(SecretKind.CHEST, x, y, z, pi, s.name()));
+                        secrets.add(new Secret(SecretKind.CHEST, x, y, z, pi, s.name(), spawnRadius(p, s), chest));
                     }
                     case "wither" -> {
-                        if (p.at(x, y, z) == null) writes.add(x, y, z, head(secretRng));
-                        heads.add(new Head(x, y, z, HeadProfile.WITHER_ESSENCE));
-                        secrets.add(new Secret(SecretKind.WITHER, x, y, z, pi, s.name()));
+                        BlockData there = p.at(x, y, z);
+                        BlockData head = there == null ? head(secretRng)
+                            : there.getMaterial() == Material.PLAYER_HEAD || there.getMaterial() == Material.PLAYER_WALL_HEAD ? there : null;
+                        if (head != null) writes.add(x, y, z, AIR);
+                        else heads.add(new Head(x, y, z, HeadProfile.WITHER_ESSENCE));
+                        secrets.add(new Secret(SecretKind.WITHER, x, y, z, pi, s.name(), spawnRadius(p, s), head));
                     }
-                    case "item" -> secrets.add(new Secret(SecretKind.ITEM, x, y, z, pi, s.name()));
-                    case "bat" -> secrets.add(new Secret(SecretKind.BAT, x, y, z, pi, s.name()));
+                    case "item" -> secrets.add(new Secret(SecretKind.ITEM, x, y, z, pi, s.name(), spawnRadius(p, s), null));
+                    case "bat" -> secrets.add(new Secret(SecretKind.BAT, x, y, z, pi, s.name(), spawnRadius(p, s), null));
                     case "key" -> {
-                        if (s.name().contains("Place")) secrets.add(new Secret(SecretKind.KEY_SLOT, x, y, z, pi, s.name()));
+                        if (s.name().contains("Place")) secrets.add(new Secret(SecretKind.KEY_SLOT, x, y, z, pi, s.name(), 0, null));
                         else keys.computeIfAbsent(s.name(), k -> new ArrayList<>()).add(s);
                     }
                     default -> { }
@@ -496,22 +558,35 @@ final class DungeonPlan {
                 int[] w = p.toWorld(s.x(), s.z());
                 writes.add(w[0], s.y(), w[1], head(secretRng));
                 heads.add(new Head(w[0], s.y(), w[1], HeadProfile.REDSTONE_KEY));
-                secrets.add(new Secret(SecretKind.KEY, w[0], s.y(), w[1], pi, s.name()));
+                secrets.add(new Secret(SecretKind.KEY, w[0], s.y(), w[1], pi, s.name(), 0, null));
             }
         }
         if (itemChests.isEmpty()) return;
         mimic = secretRng.pick(itemChests);
         Secret s = secrets.get(mimic);
-        writes.add(s.x(), s.y(), s.z(), trappedChest(placements.get(s.placement()), s.x(), s.y(), s.z()));
+        BlockData trapped = trappedChest(placements.get(s.placement()), s.block(), s.x(), s.y(), s.z());
+        if (s.block() == null) writes.add(s.x(), s.y(), s.z(), trapped);
+        else secrets.set(mimic, new Secret(s.kind(), s.x(), s.y(), s.z(), s.placement(), s.name(), s.radius(), trapped));
     }
 
-    private static BlockData trappedChest(Placement p, int x, int y, int z) {
-        BlockData there = p.at(x, y, z);
+    private static BlockData trappedChest(Placement p, BlockData there, int x, int y, int z) {
+        if (there == null) there = p.at(x, y, z);
         BlockData chest = there != null && there.getMaterial() == Material.CHEST
             ? Bukkit.createBlockData(there.getAsString().replace("minecraft:chest", "minecraft:trapped_chest"))
+            : there != null && there.getMaterial() == Material.TRAPPED_CHEST ? there.clone()
             : Bukkit.createBlockData("minecraft:trapped_chest[facing=" + chestFacing(p, x, y, z) + "]");
         if (chest instanceof org.bukkit.block.data.type.Chest half) half.setType(org.bukkit.block.data.type.Chest.Type.SINGLE);
         return chest;
+    }
+
+    static double spawnRadius(String room, RoomLibrary.Secret s) {
+        if (room.equals("Red Green") && s.category().equals("item") && s.x() == 1 && s.y() == 61 && s.z() == 15) return 18.0;
+        if (room.equals("Super Tall") && s.category().equals("bat") && s.y() < 90) return 11.0;
+        return SPAWN_RADIUS;
+    }
+
+    private static double spawnRadius(Placement p, RoomLibrary.Secret s) {
+        return spawnRadius(p.data().name, s);
     }
 
     private static BlockData head(Rng rng) {

@@ -16,11 +16,9 @@ import org.bukkit.map.MapCanvas;
 import org.bukkit.map.MapRenderer;
 import org.bukkit.map.MapView;
 
-/** Tic Tac Toe against a perfect AI that moves first. A tie solves it, a loss fails it. */
 final class PuzzleTicTacToe extends Puzzle {
     private static final int X = 8;
     private static final char AI = 'X', YOU = 'O';
-    // Map colors solvers read from the middle pixel: 114 is red (X), 33 is white (the O's hole).
     private static final byte BACKGROUND = 33, RED = 114, BLUE = 102;
     private static MapView mapX, mapO;
 

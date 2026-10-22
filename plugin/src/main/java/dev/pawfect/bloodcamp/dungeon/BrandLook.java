@@ -16,7 +16,6 @@ import org.bukkit.scoreboard.Objective;
 import org.bukkit.scoreboard.Scoreboard;
 import org.bukkit.scoreboard.Team;
 
-/** Bloodcamp's own sidebar and tab header/footer, used everywhere the Hypixel look isn't (lobby, practice rooms). */
 final class BrandLook {
     static final TextColor BRAND = TextColor.color(0xE0303A);
     static final TextColor GOLD = TextColor.color(0xF7D774);
@@ -75,7 +74,6 @@ final class BrandLook {
         }
     }
 
-    /** Drops what we know about this player without touching their screen (the Hypixel look took over, or they left). */
     void forget(Player player) {
         shown.remove(player.getUniqueId());
     }

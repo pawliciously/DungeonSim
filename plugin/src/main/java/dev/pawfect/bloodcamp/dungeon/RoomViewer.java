@@ -85,6 +85,7 @@ final class RoomViewer implements Listener {
         final boolean[] real;
         Location spawn;
         String secrets = "no secret data";
+        DungeonSecrets tracker;
 
         View(World world, String room, String shape, boolean practice, String name, List<Lever> levers) {
             this.world = world;
@@ -105,6 +106,7 @@ final class RoomViewer implements Listener {
     private final Map<String, View> views = new HashMap<>();
     private BukkitTask ticker;
     private int counter;
+    private long ticks;
     private boolean building;
 
     RoomViewer(JavaPlugin plugin, RoomLibrary library, DungeonManager manager) {
@@ -117,6 +119,7 @@ final class RoomViewer implements Listener {
         Bukkit.getPluginManager().registerEvents(this, plugin);
         ticker = Bukkit.getScheduler().runTaskTimer(plugin, this::tick, 20, 20);
         Bukkit.getScheduler().runTaskTimer(plugin, () -> {
+            ticks++;
             for (View v : views.values()) {
                 if (v.spawn == null) continue;
                 for (Player p : v.world.getPlayers()) {
@@ -125,6 +128,11 @@ final class RoomViewer implements Listener {
                         p.setFallDistance(0);
                     }
                 }
+                if (v.tracker == null) continue;
+                v.tracker.pickupNearby();
+                v.tracker.spawnNearby(pi -> true);
+                if (ticks % 5 == 0) v.tracker.restoreBroken(System.currentTimeMillis());
+                if (ticks % 10 == 0) for (Player p : v.world.getPlayers()) DungeonItems.regenCharges(plugin, p);
             }
         }, 1, 1);
     }
@@ -165,13 +173,28 @@ final class RoomViewer implements Listener {
         return List.copyOf(recorded.keySet());
     }
 
-    record Info(String name, String shape, int secrets, boolean practice) {}
+    record Info(String name, String shape, int secrets, int found, boolean practice) {}
 
     Info info(World world) {
         View v = views.get(world.getName());
         if (v == null) return null;
+        if (v.tracker != null) return new Info(v.name, v.shape, v.tracker.totalAll(), v.tracker.totalFound(), v.practice);
         RoomLibrary.RoomSecrets s = library.secrets(v.room);
-        return new Info(v.name, v.shape, s == null ? 0 : s.count(), v.practice);
+        return new Info(v.name, v.shape, s == null ? 0 : s.count(), -1, v.practice);
+    }
+
+    String roomOf(World world) {
+        View v = views.get(world.getName());
+        return v == null ? null : v.room;
+    }
+
+    boolean resetPractice(Player player) {
+        View v = views.get(player.getWorld().getName());
+        if (v == null || v.tracker == null) return false;
+        v.tracker.reset();
+        player.teleport(v.spawn);
+        DungeonItems.giveKit(plugin, player);
+        return true;
     }
 
     boolean isView(World world) {
@@ -253,6 +276,7 @@ final class RoomViewer implements Listener {
                 for (int x = 0; x < data.sx; x++) {
                     int index = data.data[(dy * data.sz + z) * data.sx + x];
                     if (data.isAir(index)) continue;
+                    if (shape.equals("l-shape") && DungeonPlan.outsideL(data.ox + x, data.oz + z)) continue;
                     at.add(new int[] {data.ox + x, data.oy + dy, data.oz + z});
                     blocks.add(data.state(index, 0));
                 }
@@ -273,7 +297,12 @@ final class RoomViewer implements Listener {
             task[0].cancel();
             building = false;
             for (RoomData.Head h : data.heads) h.profile().applyTo(world.getBlockAt(h.rx(), h.y(), h.rz()));
-            view.secrets = placeSecrets(world, data.room);
+            if (practice) {
+                view.tracker = practiceSecrets(world, data, view);
+                manager.practiceSecrets(world, view.tracker);
+            } else {
+                view.secrets = placeSecrets(world, data.room);
+            }
             for (Lever l : view.levers) for (int[] b : l.blocks()) l.was().add(world.getBlockAt(b[0], b[1], b[2]).getBlockData());
             for (int n = 0; n < view.levers.size(); n++) {
                 Lever l = view.levers.get(n);
@@ -282,7 +311,7 @@ final class RoomViewer implements Listener {
             int spawned = mobs == null ? 0 : spawnMobs(world, mobs);
             view.spawn = spawnPoint(world, data);
             if (practice) {
-                Puzzle puzzle = manager.puzzles().add(world, Puzzle.Frame.IDENTITY, data.room, view.name, -1, p -> {
+                Puzzle puzzle = manager.puzzles().add(world, Puzzle.Frame.IDENTITY, data.room, DungeonManager.tabName(view.name), -1, p -> {
                     if (p.state == Puzzle.State.SOLVED) restartLater(view, p);
                 });
                 Location door = new Location(world, 15.5, 69, 2.5, 0f, 0f);
@@ -431,6 +460,62 @@ final class RoomViewer implements Listener {
         }
     }
 
+    private DungeonSecrets practiceSecrets(World world, RoomData data, View view) {
+        RoomLibrary.RoomSecrets secrets = library.secrets(data.room);
+        if (secrets == null) {
+            view.secrets = "no secret data for this room";
+            return null;
+        }
+        List<DungeonPlan.Secret> list = new ArrayList<>();
+        int chests = 0, essence = 0, keys = 0, items = 0, bats = 0;
+        for (RoomLibrary.Secret s : secrets.secrets()) {
+            Block block = world.getBlockAt(s.x(), s.y(), s.z());
+            double radius = DungeonPlan.spawnRadius(data.name, s);
+            switch (s.category()) {
+                case "chest" -> {
+                    Material m = block.getType();
+                    BlockData chest = m == Material.CHEST || m == Material.TRAPPED_CHEST ? block.getBlockData()
+                        : block.isPassable() ? Bukkit.createBlockData("minecraft:chest[facing=" + chestFacing(block) + "]") : null;
+                    if (chest != null) block.setType(Material.AIR, false);
+                    list.add(new DungeonPlan.Secret(DungeonPlan.SecretKind.CHEST, s.x(), s.y(), s.z(), 0, s.name(), radius, chest));
+                    chests++;
+                }
+                case "wither" -> {
+                    Material m = block.getType();
+                    BlockData head = m == Material.PLAYER_HEAD || m == Material.PLAYER_WALL_HEAD ? block.getBlockData()
+                        : block.isPassable() ? Bukkit.createBlockData("minecraft:player_head[rotation=" + (int) (Math.random() * 16) + "]") : null;
+                    if (head != null) block.setType(Material.AIR, false);
+                    list.add(new DungeonPlan.Secret(DungeonPlan.SecretKind.WITHER, s.x(), s.y(), s.z(), 0, s.name(), radius, head));
+                    essence++;
+                }
+                case "key" -> {
+                    if (s.name().contains("Place")) {
+                        list.add(new DungeonPlan.Secret(DungeonPlan.SecretKind.KEY_SLOT, s.x(), s.y(), s.z(), 0, s.name(), 0, null));
+                    } else {
+                        head(block, HeadProfile.REDSTONE_KEY);
+                        list.add(new DungeonPlan.Secret(DungeonPlan.SecretKind.KEY, s.x(), s.y(), s.z(), 0, s.name(), 0, null));
+                        keys++;
+                    }
+                }
+                case "item" -> {
+                    list.add(new DungeonPlan.Secret(DungeonPlan.SecretKind.ITEM, s.x(), s.y(), s.z(), 0, s.name(), radius, null));
+                    items++;
+                }
+                case "bat" -> {
+                    list.add(new DungeonPlan.Secret(DungeonPlan.SecretKind.BAT, s.x(), s.y(), s.z(), 0, s.name(), radius, null));
+                    bats++;
+                }
+                default -> { }
+            }
+        }
+        view.secrets = secrets.count() + " (" + chests + " chests, " + essence + " essence, " + items + " items, " + bats + " bats"
+            + (keys > 0 ? ", " + keys + " redstone key spot(s)" : "") + "), they appear as you get close";
+        DungeonSecrets tracker = new DungeonSecrets(plugin, world,
+            new DungeonSecrets.Setup(list, new int[] {secrets.count()}, List.of(), System.nanoTime(), null));
+        tracker.start();
+        return tracker;
+    }
+
     private String placeSecrets(World world, String room) {
         RoomLibrary.RoomSecrets secrets = library.secrets(room);
         if (secrets == null) return "no secret data for this room";
@@ -498,13 +583,37 @@ final class RoomViewer implements Listener {
     }
 
     private static Location spawnPoint(World world, RoomData data) {
-        int x = data.ox + data.sx / 2, z = data.oz + data.sz / 2;
+        int cellsX = Math.max(1, (data.sx + 1) / DungeonPlan.CELL), cellsZ = Math.max(1, (data.sz + 1) / DungeonPlan.CELL);
+        for (int cz = 0; cz < cellsZ; cz++) {
+            for (int cx = 0; cx < cellsX; cx++) {
+                int x = data.ox + Math.min(cx * DungeonPlan.CELL + 15, data.sx - 1), z = data.oz + Math.min(cz * DungeonPlan.CELL + 15, data.sz - 1);
+                Location at = standAt(world, data, x, z);
+                if (at != null) return at;
+            }
+        }
+        int mx = data.ox + data.sx / 2, mz = data.oz + data.sz / 2;
+        Location best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (int x = data.ox; x < data.ox + data.sx; x++) {
+            for (int z = data.oz; z < data.oz + data.sz; z++) {
+                double d = (x - mx) * (x - mx) + (z - mz) * (z - mz);
+                if (d >= bestDistance) continue;
+                Location at = standAt(world, data, x, z);
+                if (at == null) continue;
+                best = at;
+                bestDistance = d;
+            }
+        }
+        return best != null ? best : new Location(world, mx + 0.5, data.oy + data.sy + 1, mz + 0.5);
+    }
+
+    private static Location standAt(World world, RoomData data, int x, int z) {
         for (int y = Math.max(data.oy + 1, 60); y < data.oy + data.sy; y++) {
             if (world.getBlockAt(x, y - 1, z).isSolid() && world.getBlockAt(x, y, z).isPassable() && world.getBlockAt(x, y + 1, z).isPassable()) {
                 return new Location(world, x + 0.5, y, z + 0.5);
             }
         }
-        return new Location(world, x + 0.5, data.oy + data.sy + 1, z + 0.5);
+        return null;
     }
 
     private static final BlockFace[] WALLS = {BlockFace.NORTH, BlockFace.SOUTH, BlockFace.WEST, BlockFace.EAST};
@@ -574,12 +683,12 @@ final class RoomViewer implements Listener {
 
     @EventHandler
     public void onPhysics(org.bukkit.event.block.BlockPhysicsEvent event) {
-        if (isView(event.getBlock().getWorld())) event.setCancelled(true);
+        if (isView(event.getBlock().getWorld()) && !manager.puzzles().waterAllowed(event.getBlock(), null)) event.setCancelled(true);
     }
 
     @EventHandler
     public void onFlow(org.bukkit.event.block.BlockFromToEvent event) {
-        if (isView(event.getBlock().getWorld())) event.setCancelled(true);
+        if (isView(event.getBlock().getWorld()) && !manager.puzzles().waterAllowed(event.getBlock(), event.getToBlock())) event.setCancelled(true);
     }
 
     @EventHandler
@@ -589,6 +698,7 @@ final class RoomViewer implements Listener {
 
     @EventHandler
     public void onItemSpawn(org.bukkit.event.entity.ItemSpawnEvent event) {
+        if (event.getEntity().getPersistentDataContainer().has(DungeonSecrets.secretTag(plugin))) return;
         if (isView(event.getEntity().getWorld())) event.setCancelled(true);
     }
 
@@ -613,6 +723,7 @@ final class RoomViewer implements Listener {
 
     private void remove(View v) {
         views.remove(v.world.getName());
+        manager.practiceSecrets(v.world, null);
         manager.puzzles().remove(v.world);
         manager.unloadAndDelete(v.world);
     }

@@ -49,6 +49,7 @@ final class DungeonItems {
     private static final byte HYPERION = 7;
     private static final byte BREAKER = 8;
     private static final byte TERMINATOR = 9;
+    private static final byte SCEPTRE = 10;
     private static final long TERMINATOR_COOLDOWN_MS = 200;
     private static final double TERMINATOR_SPREAD = Math.toRadians(5);
     private static final float ARROW_SPEED = 3.0f;
@@ -63,7 +64,13 @@ final class DungeonItems {
     private static final double IMPLOSION_RADIUS = 6;
     private static final long HYPERION_COOLDOWN_MS = 150;
 
-    static final int MAX_CHARGES = 20;
+    static final int MAX_CHARGES = 25;
+
+    private static final double BAT_SPEED = 0.8;
+    private static final int BAT_LIFETIME = 80;
+    private static final double BAT_BLAST = 6;
+    private static final long SCEPTRE_COOLDOWN_MS = 250;
+    private static final Map<UUID, Long> lastSceptre = new ConcurrentHashMap<>();
 
     private static final Map<UUID, Long> lastUse = new ConcurrentHashMap<>();
     private static final Map<UUID, Integer> charges = new ConcurrentHashMap<>();
@@ -85,10 +92,20 @@ final class DungeonItems {
         INSTANT_PASSABLE.addAll(Tag.BUTTONS.getValues());
         INSTANT_PASSABLE.addAll(Tag.FLOWER_POTS.getValues());
         INSTANT_PASSABLE.addAll(Tag.WOOL_CARPETS.getValues());
-        ETHER_PASSABLE.addAll(INSTANT_PASSABLE);
-        ETHER_PASSABLE.addAll(List.of(Material.SNOW, Material.PUMPKIN_STEM, Material.ATTACHED_PUMPKIN_STEM, Material.COCOA,
-            Material.TRIPWIRE_HOOK, Material.LILY_PAD, Material.MOVING_PISTON));
-        ETHER_PASSABLE.addAll(Tag.BANNERS.getValues());
+        ETHER_PASSABLE.addAll(List.of(Material.AIR, Material.CAVE_AIR, Material.VOID_AIR, Material.WATER, Material.LAVA,
+            Material.COBWEB, Material.SHORT_GRASS, Material.FERN, Material.DEAD_BUSH, Material.MOVING_PISTON,
+            Material.BROWN_MUSHROOM, Material.RED_MUSHROOM, Material.TORCH, Material.WALL_TORCH, Material.FIRE,
+            Material.REDSTONE_WIRE, Material.WHEAT, Material.LADDER, Material.RAIL, Material.LEVER, Material.REDSTONE_TORCH,
+            Material.REDSTONE_WALL_TORCH, Material.SNOW, Material.REPEATER, Material.PUMPKIN_STEM, Material.ATTACHED_PUMPKIN_STEM,
+            Material.MELON_STEM, Material.ATTACHED_MELON_STEM, Material.VINE, Material.LILY_PAD, Material.NETHER_WART,
+            Material.TRIPWIRE_HOOK, Material.TRIPWIRE, Material.CARROTS, Material.POTATOES, Material.COMPARATOR,
+            Material.ACTIVATOR_RAIL, Material.SUNFLOWER, Material.LILAC, Material.TALL_GRASS, Material.LARGE_FERN,
+            Material.ROSE_BUSH, Material.PEONY));
+        ETHER_PASSABLE.addAll(Tag.SAPLINGS.getValues());
+        ETHER_PASSABLE.addAll(Tag.SMALL_FLOWERS.getValues());
+        ETHER_PASSABLE.addAll(Tag.BUTTONS.getValues());
+        ETHER_PASSABLE.addAll(Tag.FLOWER_POTS.getValues());
+        ETHER_PASSABLE.addAll(Tag.WOOL_CARPETS.getValues());
         for (Material m : Material.values()) {
             if (m.isBlock() && (m.name().endsWith("_HEAD") || m.name().endsWith("_SKULL"))) ETHER_PASSABLE.add(m);
         }
@@ -162,9 +179,106 @@ final class DungeonItems {
         });
     }
 
+    static ItemStack sceptre(JavaPlugin plugin) {
+        ItemStack stack = new ItemStack(Material.ALLIUM);
+        ItemMeta meta = stack.getItemMeta();
+        meta.displayName(Component.text("Spirit Sceptre", NamedTextColor.GOLD).decoration(TextDecoration.ITALIC, false));
+        meta.lore(lore("""
+            §6Ability: Guided Bat  §e§lRIGHT CLICK
+            §7Shoots a guided spirit bat, following your aim
+            §7and exploding for §c2,000 §7damage.
+
+            §6§lLEGENDARY DUNGEON SWORD"""));
+        finish(plugin, meta, SCEPTRE);
+        stack.setItemMeta(meta);
+        return withId(stack, tag -> tag.putString("id", "BAT_WAND"));
+    }
+
+    static boolean isSceptre(JavaPlugin plugin, ItemStack stack) {
+        return DungeonSecrets.tagOf(plugin, stack) == SCEPTRE;
+    }
+
+    static NamespacedKey spiritKey(JavaPlugin plugin) {
+        return new NamespacedKey(plugin, "spirit_bat");
+    }
+
+    static void useSceptre(JavaPlugin plugin, Player player) {
+        long now = System.currentTimeMillis();
+        Long last = lastSceptre.get(player.getUniqueId());
+        if (last != null && now - last < SCEPTRE_COOLDOWN_MS) return;
+        lastSceptre.put(player.getUniqueId(), now);
+        World world = player.getWorld();
+        Location eye = player.getEyeLocation();
+        Location start = eye.clone().add(eye.getDirection().multiply(0.6)).subtract(0, 0.45, 0);
+        NamespacedKey puzzle = new NamespacedKey(plugin, "puzzle");
+        Bat bat = world.spawn(start, Bat.class, b -> {
+            b.setAI(false);
+            b.setGravity(false);
+            b.setInvulnerable(true);
+            b.setSilent(true);
+            b.setPersistent(false);
+            b.setAwake(true);
+            b.setCollidable(false);
+            b.getPersistentDataContainer().set(spiritKey(plugin), PersistentDataType.BYTE, (byte) 1);
+        });
+        world.playSound(start, Sound.ENTITY_BAT_TAKEOFF, 0.6f, 1.3f);
+        new org.bukkit.scheduler.BukkitRunnable() {
+            int age;
+
+            @Override
+            public void run() {
+                if (!bat.isValid() || !player.isOnline() || player.getWorld() != world) {
+                    bat.remove();
+                    cancel();
+                    return;
+                }
+                Vector centre = bat.getLocation().toVector().add(new Vector(0, 0.45, 0));
+                Location eyeNow = player.getEyeLocation();
+                Vector aim = eyeNow.toVector().add(eyeNow.getDirection().multiply(centre.distance(eyeNow.toVector()) + BAT_SPEED * 2));
+                Vector dir = aim.subtract(centre);
+                if (dir.lengthSquared() < 1e-6) dir = eyeNow.getDirection();
+                dir.normalize();
+                org.bukkit.util.RayTraceResult wall = world.rayTraceBlocks(centre.toLocation(world), dir, BAT_SPEED,
+                    org.bukkit.FluidCollisionMode.NEVER, true);
+                Vector next = wall != null ? wall.getHitPosition() : centre.clone().add(dir.clone().multiply(BAT_SPEED));
+                boolean mob = false;
+                for (Entity e : world.getNearbyEntities(next.toLocation(world), 0.7, 0.7, 0.7)) {
+                    if (target(e, plugin, puzzle)) mob = true;
+                }
+                if (wall != null || mob || ++age >= BAT_LIFETIME) {
+                    explode(player, next.toLocation(world), plugin, puzzle);
+                    bat.remove();
+                    cancel();
+                    return;
+                }
+                Location to = next.toLocation(world).subtract(0, 0.45, 0);
+                to.setDirection(dir);
+                bat.teleport(to);
+            }
+        }.runTaskTimer(plugin, 1, 1);
+    }
+
+    private static boolean target(Entity e, JavaPlugin plugin, NamespacedKey puzzle) {
+        if (!(e instanceof Bat) && !(e instanceof Monster)) return false;
+        if (e.isDead() || e.getPersistentDataContainer().has(spiritKey(plugin))) return false;
+        return !e.getPersistentDataContainer().has(puzzle);
+    }
+
+    private static void explode(Player player, Location at, JavaPlugin plugin, NamespacedKey puzzle) {
+        World world = at.getWorld();
+        world.spawnParticle(Particle.EXPLOSION, at, 3, 0.4, 0.4, 0.4, 0);
+        world.playSound(at, Sound.ENTITY_GENERIC_EXPLODE, 0.8f, 1.1f);
+        for (Entity e : world.getNearbyEntities(at, BAT_BLAST, BAT_BLAST, BAT_BLAST)) {
+            if (!target(e, plugin, puzzle) || e.getLocation().distanceSquared(at) > BAT_BLAST * BAT_BLAST) continue;
+            ((org.bukkit.entity.LivingEntity) e).damage(10_000, player);
+        }
+    }
+
     static boolean isTerminator(JavaPlugin plugin, ItemStack stack) {
         return DungeonSecrets.tagOf(plugin, stack) == TERMINATOR;
     }
+
+    static final byte AIMED_ARROW = 1;
 
     static NamespacedKey arrowKey(JavaPlugin plugin) {
         return new NamespacedKey(plugin, "terminator_arrow");
@@ -178,21 +292,22 @@ final class DungeonItems {
         Location eye = player.getEyeLocation();
         Vector look = eye.getDirection();
         for (double angle : new double[] {-TERMINATOR_SPREAD, 0, TERMINATOR_SPREAD}) {
-            arrow(plugin, player, eye, look.clone().rotateAroundY(angle));
+            arrow(plugin, player, eye, look.clone().rotateAroundY(angle), angle == 0);
         }
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
-            if (player.isOnline()) arrow(plugin, player, player.getEyeLocation(), player.getEyeLocation().getDirection());
+            if (player.isOnline()) arrow(plugin, player, player.getEyeLocation(), player.getEyeLocation().getDirection(), true);
         }, 2);
         player.getWorld().playSound(eye, Sound.ENTITY_ARROW_SHOOT, 1f, 1f);
     }
 
-    private static void arrow(JavaPlugin plugin, Player player, Location eye, Vector direction) {
+    private static void arrow(JavaPlugin plugin, Player player, Location eye, Vector direction, boolean aimed) {
         org.bukkit.entity.Arrow arrow = player.getWorld().spawnArrow(eye.clone().add(direction.clone().multiply(0.3)), direction, ARROW_SPEED, 0f);
         arrow.setShooter(player);
         arrow.setPickupStatus(org.bukkit.entity.AbstractArrow.PickupStatus.DISALLOWED);
         arrow.setCritical(true);
         arrow.setPersistent(false);
-        arrow.getPersistentDataContainer().set(arrowKey(plugin), PersistentDataType.BYTE, (byte) 1);
+        arrow.setPierceLevel(127);
+        arrow.getPersistentDataContainer().set(arrowKey(plugin), PersistentDataType.BYTE, aimed ? AIMED_ARROW : (byte) 2);
         Bukkit.getScheduler().runTaskLater(plugin, () -> {
             if (arrow.isValid()) arrow.remove();
         }, 60);
@@ -208,7 +323,14 @@ final class DungeonItems {
         stack.setData(DataComponentTypes.CAN_BREAK, ItemAdventurePredicate.itemAdventurePredicate(List.of(BlockPredicate.predicate().build())));
         stack.setData(DataComponentTypes.TOOL, io.papermc.paper.datacomponent.item.Tool.tool().defaultMiningSpeed(1_000_000f).damagePerBlock(0).build());
         stack.setData(DataComponentTypes.TOOLTIP_DISPLAY, TooltipDisplay.tooltipDisplay().addHiddenComponents(DataComponentTypes.CAN_BREAK).build());
+        chargeBar(stack, charge);
         return withId(stack, tag -> tag.putString("id", "DUNGEONBREAKER"));
+    }
+
+    private static void chargeBar(ItemStack stack, int charge) {
+        stack.unsetData(DataComponentTypes.UNBREAKABLE);
+        stack.setData(DataComponentTypes.MAX_DAMAGE, MAX_CHARGES + 1);
+        stack.setData(DataComponentTypes.DAMAGE, MAX_CHARGES - Math.max(0, Math.min(MAX_CHARGES, charge)));
     }
 
     private static List<Component> breakerLore(int charge) {
@@ -265,13 +387,12 @@ final class DungeonItems {
         return DungeonSecrets.tagOf(plugin, stack) == BREAKER;
     }
 
-    /** Lays the kit out the way the player's loadout says (the map is handed out separately at Mort). */
     static void giveKit(JavaPlugin plugin, Player player) {
         charges.put(player.getUniqueId(), MAX_CHARGES);
         PlayerInventory inv = player.getInventory();
         for (int slot = 0; slot < inv.getSize(); slot++) {
             byte t = DungeonSecrets.tagOf(plugin, inv.getItem(slot));
-            if (t == 2 || (t >= AOTV && t <= TERMINATOR)) inv.setItem(slot, null);
+            if (t == 2 || (t >= AOTV && t <= SCEPTRE)) inv.setItem(slot, null);
         }
         for (Map.Entry<Byte, Integer> e : Loadout.layout(plugin, player).entrySet()) {
             if (e.getKey() == 4) continue;
@@ -293,6 +414,7 @@ final class DungeonItems {
             case HYPERION -> hyperion(plugin);
             case BREAKER -> breaker(plugin, MAX_CHARGES);
             case TERMINATOR -> terminator(plugin);
+            case SCEPTRE -> sceptre(plugin);
             default -> {
                 ItemStack map = new ItemStack(Material.FILLED_MAP);
                 ItemMeta meta = map.getItemMeta();
@@ -341,6 +463,7 @@ final class DungeonItems {
             ItemMeta meta = stack.getItemMeta();
             meta.lore(breakerLore(value));
             stack.setItemMeta(meta);
+            chargeBar(stack, value);
         }
     }
 
@@ -375,8 +498,10 @@ final class DungeonItems {
         return true;
     }
 
+    static java.util.function.Predicate<Location> noteleport = l -> false;
     private static Location instant(Player player, int range) {
         Location from = player.getLocation();
+        if (noteleport.test(from)) return null;
         World world = player.getWorld();
         Vector eye = from.toVector().add(new Vector(0, player.isSneaking() ? EYE_SNEAKING : EYE, 0));
         Vector dir = from.getDirection().normalize();
@@ -394,7 +519,8 @@ final class DungeonItems {
         if (last == null) return null;
         Location to = new Location(world, Math.floor(last.getX()) + 0.5, Math.floor(last.getY()), Math.floor(last.getZ()) + 0.5,
             from.getYaw(), from.getPitch());
-        player.teleport(to);
+        if (noteleport.test(to)) return null;
+        Net.teleportKeepLook(player, to.getX(), to.getY(), to.getZ());
         player.setFallDistance(0);
         return to;
     }
@@ -412,9 +538,21 @@ final class DungeonItems {
         int[] target = traverse(world, start, end);
         if (target == null) return;
         Location to = new Location(world, target[0] + 0.5, target[1] + 1.05, target[2] + 0.5, from.getYaw(), from.getPitch());
-        player.teleport(to);
+        if (noteleport.test(from) || noteleport.test(to)) return;
+        world.spawnParticle(Particle.WITCH, from, 25, 0.25, 1.0, 0.25, 0, null, true);
+        Net.teleportKeepLook(player, to.getX(), to.getY(), to.getZ());
         player.setFallDistance(0);
         world.playSound(to, Sound.ENTITY_ENDER_DRAGON_HURT, 1f, 0.53968254f);
+    }
+
+    private static boolean etherPassable(Block block) {
+        Material type = block.getType();
+        if (!ETHER_PASSABLE.contains(type)) return false;
+        return switch (type) {
+            case WATER, LAVA -> block.getBlockData() instanceof org.bukkit.block.data.Levelled liquid && liquid.getLevel() == 0;
+            case REDSTONE_TORCH, REDSTONE_WALL_TORCH -> block.getBlockData() instanceof org.bukkit.block.data.Lightable torch && torch.isLit();
+            default -> true;
+        };
     }
 
     private static int[] traverse(World world, Vector start, Vector end) {
@@ -429,9 +567,8 @@ final class DungeonItems {
         double maxY = Math.abs((y + Math.max(stepY, 0) - y0) * invY);
         double maxZ = Math.abs((z + Math.max(stepZ, 0) - z0) * invZ);
         for (int i = 0; i < 1000; i++) {
-            if (!ETHER_PASSABLE.contains(world.getBlockAt(x, y, z).getType())) {
-                boolean room = ETHER_PASSABLE.contains(world.getBlockAt(x, y + 1, z).getType())
-                    && ETHER_PASSABLE.contains(world.getBlockAt(x, y + 2, z).getType());
+            if (!etherPassable(world.getBlockAt(x, y, z))) {
+                boolean room = etherPassable(world.getBlockAt(x, y + 1, z)) && etherPassable(world.getBlockAt(x, y + 2, z));
                 return room ? new int[]{x, y, z} : null;
             }
             if (x == endX && y == endY && z == endZ) return null;

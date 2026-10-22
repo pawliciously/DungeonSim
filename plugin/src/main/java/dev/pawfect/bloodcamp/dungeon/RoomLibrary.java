@@ -109,6 +109,30 @@ final class RoomLibrary {
         return pools.getOrDefault(name, List.of());
     }
 
+    static final List<String> FORCEABLE = List.of("puzzle", "trap", "miniboss", "1x1", "1x2", "1x3", "1x4", "2x2", "l-shape");
+
+    synchronized Entry byFile(String name) {
+        for (String pool : FORCEABLE) {
+            for (Entry e : pool(pool)) if (fileName(e).equalsIgnoreCase(name)) return e;
+        }
+        return null;
+    }
+
+    synchronized String poolOf(Entry entry) {
+        for (Map.Entry<String, List<Entry>> e : pools.entrySet()) if (e.getValue().contains(entry)) return e.getKey();
+        return null;
+    }
+
+    synchronized List<String> forceableNames() {
+        List<String> out = new ArrayList<>();
+        for (String pool : FORCEABLE) for (Entry e : pool(pool)) out.add(fileName(e));
+        return out;
+    }
+
+    static String fileName(Entry entry) {
+        return entry.file().getFileName().toString().replace(".json", "");
+    }
+
     synchronized List<BlockData[]> doorFrames() {
         return doorFrames;
     }

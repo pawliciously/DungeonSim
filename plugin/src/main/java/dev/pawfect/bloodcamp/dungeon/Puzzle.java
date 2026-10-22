@@ -25,7 +25,6 @@ import org.bukkit.scheduler.BukkitTask;
 abstract class Puzzle {
     enum State { WAITING, ACTIVE, SOLVED, FAILED }
 
-    /** Maps room coords (the frame Skyblocker uses, x/z 0..30) to world coords for one placement. */
     record Frame(int turns, int cornerX, int cornerZ) {
         static final Frame IDENTITY = new Frame(0, 0, 0);
 
@@ -126,11 +125,17 @@ abstract class Puzzle {
         this.roomIndex = roomIndex;
     }
 
+    void prepare() {}
+
     void begin() {}
 
     void end() {}
 
     void tick() {}
+
+    boolean ticksWhenSolved() {
+        return false;
+    }
 
     boolean click(Player player, Block block, boolean right) {
         return false;
@@ -157,6 +162,12 @@ abstract class Puzzle {
     }
 
     final void reset() {
+        clear();
+        prepare();
+        changed();
+    }
+
+    final void clear() {
         for (BukkitTask t : tasks) t.cancel();
         tasks.clear();
         end();
@@ -165,7 +176,6 @@ abstract class Puzzle {
         original.forEach((block, data) -> block.setBlockData(data, false));
         original.clear();
         state = State.WAITING;
-        changed();
     }
 
     final void solved(Player by, String what) {
@@ -197,6 +207,9 @@ abstract class Puzzle {
         }, ticks));
     }
 
+    final void after(long ticks, Runnable run) {
+        tasks.add(Bukkit.getScheduler().runTaskLater(host.plugin, run, ticks));
+    }
     final void say(String legacy) {
         Component line = LegacyComponentSerializer.legacySection().deserialize(legacy);
         for (Player p : world.getPlayers()) p.sendMessage(line);
@@ -242,11 +255,16 @@ abstract class Puzzle {
         set(block(rx, y, rz), data);
     }
 
+    final void setUpdating(int rx, int y, int rz, BlockData data) {
+        Block block = block(rx, y, rz);
+        original.putIfAbsent(block, block.getBlockData());
+        block.setBlockData(data, true);
+    }
+
     final void set(int rx, int y, int rz, Material material) {
         set(block(rx, y, rz), material.createBlockData());
     }
 
-    /** A block state written in room orientation, turned to match the placement. */
     final BlockData state(String state) {
         return frame.rotated(Bukkit.createBlockData(state));
     }

@@ -59,6 +59,8 @@ public final class DungeonManager implements Listener {
     private final Times times;
     private final NamespacedKey previousMode;
     private final Map<String, Dungeon> dungeons = new HashMap<>();
+    private final Map<String, DungeonSecrets> practiceSecrets = new HashMap<>();
+    private final MushroomRoom mushrooms;
     private final HypixelLook look = new HypixelLook();
     private final BrandLook brand = new BrandLook();
     private final NamespacedKey parkourBest;
@@ -93,7 +95,10 @@ public final class DungeonManager implements Listener {
         Player actor;
         int witherKeys, witherDoorsOpened;
         boolean bloodKey, bloodDoorOpened;
+        boolean custom;
         final Map<java.util.UUID, Integer> runSpeed = new HashMap<>();
+        final List<org.bukkit.entity.BlockDisplay> sliding = new java.util.ArrayList<>();
+        int resets;
 
         Dungeon(JavaPlugin plugin, World world, Seed seed, DungeonPlan plan, RoomLibrary.Mimic mimic) {
             this.world = world;
@@ -131,10 +136,12 @@ public final class DungeonManager implements Listener {
         this.parkourBest = new NamespacedKey(plugin, "parkour_best");
         classKey = new NamespacedKey(plugin, "dungeon_class");
         this.puzzles = new Puzzles(plugin);
+        DungeonItems.noteleport = puzzles::noteleport;
         this.loadout = new Loadout(plugin, p -> {
             if (ours(p.getWorld()) && !inRun(p)) DungeonItems.giveKit(plugin, p);
         });
         this.viewer = new RoomViewer(plugin, library, this);
+        this.mushrooms = new MushroomRoom(plugin);
         this.menu = new MapMenu(plugin, this, times);
         this.rooms = new RoomMenu(plugin, library, viewer);
         this.lobby = new Lobby(plugin, menu::open, rooms::open, times);
@@ -183,6 +190,10 @@ public final class DungeonManager implements Listener {
         }
     }
 
+    public void waterboardTest(CommandSender sender) {
+        WaterboardTest.run(plugin, this, library, puzzles, sender);
+    }
+
     Puzzles puzzles() {
         return puzzles;
     }
@@ -192,7 +203,63 @@ public final class DungeonManager implements Listener {
         return library.summary() + ", " + viewer.reload();
     }
 
+    private interface PlanMaker {
+        DungeonPlan make() throws IOException;
+    }
+
     public void generate(CommandSender sender, Seed seed) {
+        start(sender, seed, false, () -> new DungeonPlan(LayoutGenerator.generate(seed), library));
+    }
+
+    public List<String> forceableRooms() {
+        return library.forceableNames();
+    }
+
+    public void generateCustom(CommandSender sender, Seed seed, List<String> rooms) {
+        List<RoomLibrary.Entry> forced = new java.util.ArrayList<>();
+        List<String> pools = new java.util.ArrayList<>();
+        for (String name : rooms) {
+            RoomLibrary.Entry entry = library.byFile(name);
+            if (entry == null) {
+                sender.sendMessage(Component.text("No room called " + name + ". Tab complete shows them all.", NamedTextColor.RED));
+                return;
+            }
+            forced.add(entry);
+            pools.add(library.poolOf(entry));
+        }
+        if (forced.isEmpty()) {
+            sender.sendMessage(Component.text("/bc custom [seed] <room> [room...]", NamedTextColor.GRAY));
+            return;
+        }
+        Seed first = seed != null ? seed : Seed.random(new dev.pawfect.bloodcamp.gen.Rng(java.util.concurrent.ThreadLocalRandom.current().nextLong()));
+        start(sender, first, true, () -> {
+            dev.pawfect.bloodcamp.gen.Rng rng = new dev.pawfect.bloodcamp.gen.Rng(first.value() ^ 0xC0570AL);
+            Seed at = first;
+            for (int i = 0; i < CUSTOM_TRIES; i++) {
+                Layout layout = LayoutGenerator.generate(at);
+                if (DungeonPlan.canHold(layout, pools)) return new DungeonPlan(layout, library, forced);
+                if (seed != null) throw new IllegalStateException(seed.code() + " doesn't have a spot for all of those. Leave the seed out and I'll find one that does.");
+                at = Seed.random(rng);
+            }
+            throw new IllegalStateException("No layout in " + CUSTOM_TRIES + " tries has a spot for all of those (at most 5 puzzles, 1 trap, 1 miniboss).");
+        });
+    }
+
+    private static final int CUSTOM_TRIES = 3000;
+
+    public boolean revealsMap(Player player) {
+        return player.getPersistentDataContainer().getOrDefault(revealKey(), PersistentDataType.BOOLEAN, false);
+    }
+
+    public void setRevealsMap(Player player, boolean reveal) {
+        player.getPersistentDataContainer().set(revealKey(), PersistentDataType.BOOLEAN, reveal);
+    }
+
+    private NamespacedKey revealKey() {
+        return new NamespacedKey(plugin, "reveal_map");
+    }
+
+    private void start(CommandSender sender, Seed seed, boolean custom, PlanMaker maker) {
         if (building) {
             sender.sendMessage(Component.text("Another map is still building, try again in a few seconds.", NamedTextColor.RED));
             return;
@@ -205,10 +272,11 @@ public final class DungeonManager implements Listener {
         building = true;
         pendingSeed = seed;
         pendingNumber = number;
-        sender.sendMessage(Component.text("Building ", NamedTextColor.GRAY).append(code(seed)).append(Component.text("...", NamedTextColor.GRAY)));
+        if (custom) sender.sendMessage(Component.text("Building a custom map...", NamedTextColor.GRAY));
+        else sender.sendMessage(Component.text("Building ", NamedTextColor.GRAY).append(code(seed)).append(Component.text("...", NamedTextColor.GRAY)));
         CompletableFuture.supplyAsync(() -> {
             try {
-                return new DungeonPlan(LayoutGenerator.generate(seed), library);
+                return maker.make();
             } catch (IOException e) {
                 throw new IllegalStateException("Couldn't read a room file: " + e.getMessage(), e);
             }
@@ -218,15 +286,15 @@ public final class DungeonManager implements Listener {
                 pendingSeed = null;
                 pendingNumber = -1;
                 Throwable cause = error.getCause() != null ? error.getCause() : error;
-                sender.sendMessage(Component.text("Couldn't build " + seed.code() + ": " + cause.getMessage(), NamedTextColor.RED));
+                sender.sendMessage(Component.text("Couldn't build " + (custom ? "the custom map" : seed.code()) + ": " + cause.getMessage(), NamedTextColor.RED));
                 plugin.getLogger().warning("Build of " + seed + " failed: " + cause);
                 return;
             }
-            build(sender, seed, plan);
+            build(sender, plan.layout.seed, plan, custom, sender instanceof Player p && revealsMap(p));
         }));
     }
 
-    private void build(CommandSender sender, Seed seed, DungeonPlan plan) {
+    private void build(CommandSender sender, Seed seed, DungeonPlan plan, boolean custom, boolean reveal) {
         Player player = sender instanceof Player p ? p : null;
         World world;
         try {
@@ -240,6 +308,8 @@ public final class DungeonManager implements Listener {
         }
         world.setDifficulty(Difficulty.NORMAL);
         Dungeon dungeon = new Dungeon(plugin, world, seed, plan, library.mimic());
+        dungeon.custom = custom;
+        if (reveal) dungeon.map.reveal();
         dungeon.number = pendingNumber;
         pendingSeed = null;
         pendingNumber = -1;
@@ -270,7 +340,7 @@ public final class DungeonManager implements Listener {
                 dungeon.secrets.start();
                 addPuzzles(dungeon);
                 spawnMort(dungeon);
-                plugin.getLogger().info("Built " + world.getName() + " (" + writes.size + " blocks), spawn " + dungeon.spawn().toVector() + ". " + summary(plan));
+                plugin.getLogger().info("Built " + world.getName() + " (" + writes.size + " blocks), spawn " + dungeon.spawn().toVector() + ". " + summary(plan) + ". Rooms: " + placements(plan));
                 if (player == null) {
                     sender.sendMessage(Component.text("Built " + world.getName() + ", " + writes.size + " blocks, spawn " + dungeon.spawn().toVector() + ". " + summary(plan)));
                 } else if (player.isOnline()) {
@@ -284,7 +354,7 @@ public final class DungeonManager implements Listener {
         for (DungeonPlan.Placement p : d.plan.placements) {
             if (p.room().type() != Layout.RoomType.PUZZLE) continue;
             int room = p.room().id();
-            puzzles.add(d.world, new Puzzle.Frame(p.turns(), p.cornerX(), p.cornerZ()), p.data().room, p.data().name.replace("*", ""), room, puzzle -> {
+            puzzles.add(d.world, new Puzzle.Frame(p.turns(), p.cornerX(), p.cornerZ()), p.data().room, tabName(p.data().name), room, puzzle -> {
                 if (puzzle.state == Puzzle.State.SOLVED) d.map.solvePuzzle(room);
             });
         }
@@ -317,11 +387,67 @@ public final class DungeonManager implements Listener {
             Speed.apply(player, Speed.get(player));
             if (dungeon.startedAt >= 0) giveMap(dungeon, player);
             look.show(player, state(dungeon));
+            look.newMap(player, state(dungeon));
+            player.sendActionBar(actionBar(dungeon, player));
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (dungeonOf(player.getWorld()) != dungeon) return;
+                look.newMap(player, state(dungeon));
+                player.sendActionBar(actionBar(dungeon, player));
+            }, 20);
             for (Player p : dungeon.world.getPlayers()) p.sendMessage(HypixelChat.entered(player.getName(), dungeon.seed.floor()));
             player.sendMessage(Component.text("Map ", NamedTextColor.GRAY).append(code(dungeon.seed))
                 .append(Component.text(" ready. Right-click Mort to start, right-click doors to open them. Superboom breaks cracked walls, AOTV: right click 12 blocks, sneak right click etherwarps up to 61.", NamedTextColor.GRAY)));
             player.sendMessage(Component.text(summary(dungeon.plan), NamedTextColor.DARK_GRAY));
+            if (!dungeon.map.isRevealed()) {
+                player.sendMessage(Component.text("[Reveal Map]", NamedTextColor.AQUA)
+                    .clickEvent(net.kyori.adventure.text.event.ClickEvent.runCommand("/bc reveal"))
+                    .hoverEvent(net.kyori.adventure.text.event.HoverEvent.showText(
+                        Component.text("Show every room on the dungeon map", NamedTextColor.GRAY)))
+                    .append(Component.text(" shows every room on the map.", NamedTextColor.DARK_GRAY)));
+            }
         });
+    }
+
+    public static final Map<String, Byte> GIVABLE = new java.util.LinkedHashMap<>();
+
+    static {
+        GIVABLE.put("superboom", (byte) 2);
+        GIVABLE.put("aotv", (byte) 5);
+        GIVABLE.put("pearls", (byte) 6);
+        GIVABLE.put("hyperion", (byte) 7);
+        GIVABLE.put("dungeonbreaker", (byte) 8);
+        GIVABLE.put("terminator", (byte) 9);
+        GIVABLE.put("sceptre", (byte) 10);
+    }
+
+    public void giveItem(CommandSender sender, String name, Player target) {
+        Byte tag = name == null ? null : GIVABLE.get(name.toLowerCase(java.util.Locale.ROOT));
+        if (tag == null) {
+            sender.sendMessage(Component.text("/bc item <" + String.join("|", GIVABLE.keySet()) + "> [player]", NamedTextColor.GRAY));
+            return;
+        }
+        org.bukkit.inventory.ItemStack stack = DungeonItems.kitItem(plugin, tag);
+        java.util.Map<Integer, org.bukkit.inventory.ItemStack> left = target.getInventory().addItem(stack);
+        if (!left.isEmpty()) {
+            sender.sendMessage(Component.text(target.getName() + "'s inventory is full.", NamedTextColor.RED));
+            return;
+        }
+        sender.sendMessage(Component.text("Gave ", NamedTextColor.GRAY).append(stack.effectiveName())
+            .append(Component.text(sender == target ? "." : " to " + target.getName() + ".", NamedTextColor.GRAY)));
+    }
+
+    public void reveal(Player player) {
+        Dungeon d = dungeonOf(player.getWorld());
+        if (d == null) {
+            player.sendMessage(Component.text("You're not in a map.", NamedTextColor.GRAY));
+            return;
+        }
+        if (d.map.isRevealed()) {
+            player.sendMessage(Component.text("The map is already revealed.", NamedTextColor.GRAY));
+            return;
+        }
+        d.map.reveal();
+        for (Player p : d.world.getPlayers()) p.sendMessage(Component.text(player.getName() + " revealed the map.", NamedTextColor.AQUA));
     }
 
     private static String summary(DungeonPlan plan) {
@@ -333,6 +459,16 @@ public final class DungeonManager implements Listener {
             sb.append(p.data().name);
         }
         return "Specials: " + sb;
+    }
+
+    private static String placements(DungeonPlan plan) {
+        StringBuilder sb = new StringBuilder();
+        for (DungeonPlan.Placement p : plan.placements) {
+            if (!sb.isEmpty()) sb.append("; ");
+            sb.append(p.data().name).append(" [").append(p.data().room).append("] t").append(p.turns())
+                .append(" at ").append(p.cornerX()).append(",").append(p.cornerZ());
+        }
+        return sb.toString();
     }
 
     public boolean join(Player player, Player target) {
@@ -420,7 +556,10 @@ public final class DungeonManager implements Listener {
 
     public boolean reset(Player player) {
         Dungeon d = dungeonOf(player.getWorld());
-        if (d == null) return false;
+        if (d == null) return viewer.resetPractice(player);
+        for (org.bukkit.entity.BlockDisplay part : d.sliding) part.remove();
+        d.sliding.clear();
+        d.resets++;
         for (int i = 0; i < d.open.length; i++) {
             DungeonPlan.Door door = d.plan.doors.get(i);
             if (door.type() == DoorType.NORMAL) continue;
@@ -478,8 +617,19 @@ public final class DungeonManager implements Listener {
         return dungeons.get(world.getName());
     }
 
+    void practiceSecrets(World world, DungeonSecrets secrets) {
+        if (secrets == null) practiceSecrets.remove(world.getName());
+        else practiceSecrets.put(world.getName(), secrets);
+    }
+
+    private DungeonSecrets secretsOf(World world) {
+        Dungeon d = dungeonOf(world);
+        return d != null ? d.secrets : practiceSecrets.get(world.getName());
+    }
+
     private void tick() {
         ticks++;
+        Net.tickPings();
         if (ticks % 10 == 0) brandTick();
         for (Dungeon d : dungeons.values()) {
             for (Player p : d.world.getPlayers()) {
@@ -488,7 +638,7 @@ public final class DungeonManager implements Listener {
                     p.setFallDistance(0);
                 }
             }
-            if (d.running()) {
+            if (d.startedAt >= 0) {
                 long millis = d.elapsed();
                 for (Player p : d.world.getPlayers()) {
                     Location at = p.getLocation();
@@ -496,12 +646,14 @@ public final class DungeonManager implements Listener {
                     int room = roomAt(d, x, z);
                     if (room >= 0 && !d.map.isOpened(room)) d.actor = p;
                     if (room >= 0) d.map.enter(room);
-                    if (x >= d.plan.bloodMinX && x <= d.plan.bloodMinX + 30 && z >= d.plan.bloodMinZ && z <= d.plan.bloodMinZ + 30) {
+                    if (!d.finished && x >= d.plan.bloodMinX && x <= d.plan.bloodMinX + 30 && z >= d.plan.bloodMinZ && z <= d.plan.bloodMinZ + 30) {
                         finish(d, p, millis);
                         break;
                     }
                 }
             }
+            d.secrets.pickupNearby();
+            d.secrets.spawnNearby(pi -> d.map.isOpened(d.plan.placements.get(pi).room().id()));
             if (ticks % 5 == 0) d.secrets.restoreBroken(System.currentTimeMillis());
             if (ticks % 10 == 0) {
                 for (Player p : d.world.getPlayers()) {
@@ -510,7 +662,6 @@ public final class DungeonManager implements Listener {
                 }
             }
             if (ticks % 20 == 0) {
-                d.secrets.spawnNearbyBats(pi -> d.map.isOpened(d.plan.placements.get(pi).room().id()));
                 HypixelLook.RunState state = state(d);
                 for (Player p : d.world.getPlayers()) look.update(p, state);
             }
@@ -549,7 +700,7 @@ public final class DungeonManager implements Listener {
                 lines.add(net.kyori.adventure.text.Component.text(room.name(), BrandLook.VALUE, net.kyori.adventure.text.format.TextDecoration.BOLD));
                 lines.add(net.kyori.adventure.text.Component.text(room.shape(), BrandLook.DIM));
                 lines.add(net.kyori.adventure.text.Component.empty());
-                if (room.secrets() > 0) lines.add(BrandLook.pair("Secrets", String.valueOf(room.secrets())));
+                if (room.secrets() > 0) lines.add(BrandLook.pair("Secrets", room.found() >= 0 ? room.found() + "/" + room.secrets() : String.valueOf(room.secrets())));
                 for (Puzzle puzzle : puzzles.in(p.getWorld())) {
                     String status = switch (puzzle.state) {
                         case WAITING -> "Walk in to start";
@@ -602,6 +753,10 @@ public final class DungeonManager implements Listener {
         return Component.text(bar);
     }
 
+    static String tabName(String roomName) {
+        return roomName.replace("*", "").replace(" or ", " Or ");
+    }
+
     private HypixelLook.RunState state(Dungeon d) {
         List<String> puzzles = new java.util.ArrayList<>();
         for (DungeonPlan.Placement p : d.plan.placements) {
@@ -609,7 +764,7 @@ public final class DungeonManager implements Listener {
             Puzzle puzzle = this.puzzles.of(d.world, p.room().id());
             String mark = puzzle == null || puzzle.state == Puzzle.State.WAITING || puzzle.state == Puzzle.State.ACTIVE ? "§6§l✦"
                 : puzzle.state == Puzzle.State.SOLVED ? "§a§l✔" : "§c§l✖";
-            puzzles.add((d.map.isOpened(p.room().id()) ? p.data().name.replace("*", "") : "???") + ": §7[" + mark + "§7]");
+            puzzles.add((d.map.isOpened(p.room().id()) ? tabName(p.data().name) : "???") + ": §r§7[§r" + mark + "§r§7] §r");
         }
         String floor = d.seed.floor().name();
         int clearedPct = Math.min(100, 100 * d.map.clearedCount() / Math.max(1, d.map.clearable()));
@@ -702,10 +857,14 @@ public final class DungeonManager implements Listener {
         String time = Times.format(millis);
         List<Player> runners = d.world.getPlayers().stream().filter(p -> d.runSpeed.containsKey(p.getUniqueId())).toList();
         for (Player p : d.world.getPlayers()) {
-            p.showTitle(Title.title(Component.text(time, NamedTextColor.GOLD), Component.text(by.getName() + " reached blood", NamedTextColor.GRAY)));
+            p.sendMessage(Component.text(by.getName() + " reached blood in ", NamedTextColor.GRAY).append(Component.text(time, NamedTextColor.GOLD)));
             p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1f, 1f);
         }
         long now = System.currentTimeMillis();
+        if (d.custom) {
+            for (Player p : runners) p.sendMessage(Component.text(time + " on a custom map. Not saved, custom maps stay off the leaderboards.", NamedTextColor.GREEN));
+            runners = List.of();
+        }
         for (Player p : runners) {
             Times.Clear seedBest = times.best(p.getUniqueId(), Times.onSeed(seed, floor));
             Times.Clear floorBest = times.best(p.getUniqueId(), Times.onFloor(floor));
@@ -720,10 +879,10 @@ public final class DungeonManager implements Listener {
                 p.sendMessage(Component.text("New personal best!", NamedTextColor.GOLD).append(Component.text(where, NamedTextColor.YELLOW)));
             }
         }
-        if (runners.isEmpty()) by.sendMessage(Component.text("Not saved: start the run at Mort for it to count.", NamedTextColor.GRAY));
+        if (runners.isEmpty() && !d.custom) by.sendMessage(Component.text("Not saved: start the run at Mort for it to count.", NamedTextColor.GRAY));
         for (Player p : d.world.getPlayers()) {
             p.sendMessage(Component.text("Secrets found: " + d.secrets.totalFound() + "/" + d.secrets.totalAll(), NamedTextColor.GRAY));
-            showTimes(p, d.seed);
+            if (!d.custom) showTimes(p, d.seed);
             p.sendMessage(Component.text("/bc reset to run it again, /bc leave to go back.", NamedTextColor.DARK_GRAY));
         }
         int secretsPct = d.secrets.totalAll() == 0 ? 100 : 100 * d.secrets.totalFound() / d.secrets.totalAll();
@@ -751,9 +910,47 @@ public final class DungeonManager implements Listener {
         }
         d.map.open(door.roomA());
         d.map.open(door.roomB());
-        setMiddle(d, door, org.bukkit.Material.AIR.createBlockData());
+        slideOpen(d, door);
         d.world.playSound(new Location(d.world, door.x() + 0.5, DungeonPlan.DOOR_Y + 1, door.z() + 0.5),
             door.type() == DoorType.BLOOD ? Sound.ENTITY_WITHER_SPAWN : Sound.BLOCK_IRON_DOOR_OPEN, 0.6f, 1f);
+    }
+
+    private static final int SLIDE_TICKS = 30;
+
+    private void slideOpen(Dungeon d, DungeonPlan.Door door) {
+        List<org.bukkit.entity.BlockDisplay> parts = new java.util.ArrayList<>();
+        BlockData barrier = org.bukkit.Material.BARRIER.createBlockData();
+        for (int y = DungeonPlan.DOOR_Y; y <= DungeonPlan.DOOR_Y + 3; y++) {
+            for (int z = door.z() - 1; z <= door.z() + 1; z++) {
+                for (int x = door.x() - 1; x <= door.x() + 1; x++) {
+                    Block block = d.world.getBlockAt(x, y, z);
+                    BlockData was = block.getBlockData();
+                    block.setBlockData(barrier, false);
+                    if (was.getMaterial().isAir()) continue;
+                    parts.add(d.world.spawn(block.getLocation(), org.bukkit.entity.BlockDisplay.class, e -> {
+                        e.setBlock(was);
+                        e.setPersistent(false);
+                    }));
+                }
+            }
+        }
+        d.sliding.addAll(parts);
+        int resets = d.resets;
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (d.resets != resets) return;
+            for (org.bukkit.entity.BlockDisplay part : parts) {
+                part.setInterpolationDelay(0);
+                part.setInterpolationDuration(SLIDE_TICKS);
+                part.setTransformation(new org.bukkit.util.Transformation(new org.joml.Vector3f(0, 4, 0), new org.joml.AxisAngle4f(),
+                    new org.joml.Vector3f(1, 1, 1), new org.joml.AxisAngle4f()));
+            }
+        }, 2);
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            for (org.bukkit.entity.BlockDisplay part : parts) part.remove();
+            d.sliding.removeAll(parts);
+            if (d.resets != resets || dungeonOf(d.world) != d) return;
+            setMiddle(d, door, org.bukkit.Material.AIR.createBlockData());
+        }, 2 + SLIDE_TICKS);
     }
 
     private void setMiddle(Dungeon d, DungeonPlan.Door door, BlockData block) {
@@ -766,56 +963,98 @@ public final class DungeonManager implements Listener {
 
     @EventHandler(ignoreCancelled = false)
     public void onInteract(PlayerInteractEvent event) {
-        if (ours(event.getPlayer().getWorld()) && event.getHand() == EquipmentSlot.HAND && event.getAction() != Action.PHYSICAL
-            && DungeonItems.isTerminator(plugin, event.getPlayer().getInventory().getItemInMainHand())) {
+        Player player = event.getPlayer();
+        if (!ours(player.getWorld()) || event.getHand() != EquipmentSlot.HAND || event.getAction() == Action.PHYSICAL) return;
+        Block block = event.getClickedBlock();
+        boolean rightBlock = event.getAction() == Action.RIGHT_CLICK_BLOCK, leftBlock = event.getAction() == Action.LEFT_CLICK_BLOCK;
+        Dungeon d = block == null ? null : dungeonOf(block.getWorld());
+        DungeonSecrets secrets = block == null ? null : secretsOf(block.getWorld());
+        if (block != null && (rightBlock || leftBlock)) {
+            if (puzzles.click(player, block, rightBlock)) {
+                event.setCancelled(true);
+                return;
+            }
+            if (rightBlock && !player.isSneaking() && mushroom(player, block, d)) {
+                event.setCancelled(true);
+                return;
+            }
+            if (d != null && openDoorAt(d, block, player)) {
+                event.setCancelled(true);
+                return;
+            }
+            if (rightBlock && !player.isSneaking()) {
+                if (secrets != null && secrets.onClick(player, block, true)) {
+                    event.setCancelled(true);
+                    return;
+                }
+                if (usable(block)) return;
+            }
+        }
+        org.bukkit.inventory.ItemStack held = player.getInventory().getItemInMainHand();
+        if (DungeonItems.isTerminator(plugin, held)) {
             event.setCancelled(true);
-            DungeonItems.shootTerminator(plugin, event.getPlayer());
+            DungeonItems.shootTerminator(plugin, player);
             return;
         }
-        if (ours(event.getPlayer().getWorld()) && event.getHand() == EquipmentSlot.HAND
-            && (event.getAction() == Action.RIGHT_CLICK_AIR || event.getAction() == Action.RIGHT_CLICK_BLOCK)) {
-            org.bukkit.inventory.ItemStack held = event.getPlayer().getInventory().getItemInMainHand();
+        if (event.getAction() == Action.RIGHT_CLICK_AIR || rightBlock) {
             if (DungeonItems.isAotv(plugin, held)) {
                 event.setCancelled(true);
-                DungeonItems.useAotv(event.getPlayer());
+                DungeonItems.useAotv(player);
                 return;
             }
             if (DungeonItems.isHyperion(plugin, held)) {
                 event.setCancelled(true);
-                DungeonItems.useHyperion(event.getPlayer());
+                DungeonItems.useHyperion(player);
+                return;
+            }
+            if (DungeonItems.isSceptre(plugin, held)) {
+                event.setCancelled(true);
+                DungeonItems.useSceptre(plugin, player);
                 return;
             }
         }
-        Block block = event.getClickedBlock();
-        if (block == null) return;
-        if (event.getHand() == EquipmentSlot.HAND && (event.getAction() == Action.RIGHT_CLICK_BLOCK || event.getAction() == Action.LEFT_CLICK_BLOCK)
-            && ours(block.getWorld()) && puzzles.click(event.getPlayer(), block, event.getAction() == Action.RIGHT_CLICK_BLOCK)) {
+        if (secrets == null || !(rightBlock || leftBlock)) return;
+        if (leftBlock && DungeonItems.isBreaker(plugin, held)) {
             event.setCancelled(true);
+            if (d != null) dungeonbreak(d, player, block);
+            else if (puzzles.in(block.getWorld()).isEmpty() && DungeonItems.hasCharge(player) && secrets.breakTemporarily(block)) {
+                DungeonItems.takeCharge(plugin, player);
+            }
             return;
         }
-        Dungeon d = dungeonOf(block.getWorld());
-        if (d == null) return;
-        if (event.getAction() != Action.RIGHT_CLICK_BLOCK && event.getAction() != Action.LEFT_CLICK_BLOCK) return;
-        if (event.getHand() == EquipmentSlot.OFF_HAND) return;
-        if (event.getAction() == Action.LEFT_CLICK_BLOCK && DungeonItems.isBreaker(plugin, event.getPlayer().getInventory().getItemInMainHand())) {
+        if (DungeonSecrets.isSuperboom(plugin, held)) {
             event.setCancelled(true);
-            dungeonbreak(d, event.getPlayer(), block);
+            secrets.superboom(player, block);
             return;
         }
-        if (DungeonSecrets.isSuperboom(plugin, event.getPlayer().getInventory().getItemInMainHand())) {
-            event.setCancelled(true);
-            d.secrets.superboom(event.getPlayer(), block);
-            return;
+        if (secrets.onClick(player, block, rightBlock)) event.setCancelled(true);
+    }
+
+    private boolean mushroom(Player player, Block block, Dungeon d) {
+        if (d != null) {
+            int pi = d.plan.placementAt(block.getX(), block.getZ());
+            if (pi < 0) return false;
+            DungeonPlan.Placement p = d.plan.placements.get(pi);
+            return p.data().room.equals(MushroomRoom.ROOM) && mushrooms.click(player, block, p::toWorld);
         }
+        return MushroomRoom.ROOM.equals(viewer.roomOf(block.getWorld())) && mushrooms.click(player, block, (x, z) -> new int[] {x, z});
+    }
+
+    private boolean openDoorAt(Dungeon d, Block block, Player player) {
         for (int i = 0; i < d.open.length; i++) {
             DungeonPlan.Door door = d.plan.doors.get(i);
             if (d.open[i] || door.type() == DoorType.ENTRANCE) continue;
             if (!door.inMiddle(block.getX(), block.getY(), block.getZ())) continue;
-            event.setCancelled(true);
-            open(d, i, event.getPlayer());
-            return;
+            open(d, i, player);
+            return true;
         }
-        if (d.secrets.onClick(event.getPlayer(), block, event.getAction() == Action.RIGHT_CLICK_BLOCK)) event.setCancelled(true);
+        return false;
+    }
+
+    private static boolean usable(Block block) {
+        org.bukkit.Material m = block.getType();
+        return m == org.bukkit.Material.CHEST || m == org.bukkit.Material.TRAPPED_CHEST || m == org.bukkit.Material.LEVER
+            || org.bukkit.Tag.BUTTONS.isTagged(m);
     }
 
     private void dungeonbreak(Dungeon d, Player player, Block block) {
@@ -837,9 +1076,15 @@ public final class DungeonManager implements Listener {
 
     @EventHandler
     public void onArrowHit(org.bukkit.event.entity.ProjectileHitEvent event) {
-        if (!event.getEntity().getPersistentDataContainer().has(DungeonItems.arrowKey(plugin))) return;
+        Byte kind = event.getEntity().getPersistentDataContainer().get(DungeonItems.arrowKey(plugin), PersistentDataType.BYTE);
+        if (kind == null) return;
+        org.bukkit.entity.Entity hit = event.getHitEntity();
+        if (hit != null && hit.getPersistentDataContainer().has(DungeonItems.spiritKey(plugin))) {
+            event.setCancelled(true);
+            return;
+        }
         if (event.getEntity().getShooter() instanceof Player shooter) {
-            Puzzles.ArrowResult result = puzzles.arrow(shooter, event.getHitEntity(), event.getHitBlock());
+            Puzzles.ArrowResult result = puzzles.arrow(shooter, hit, event.getHitBlock(), kind == DungeonItems.AIMED_ARROW);
             if (result == Puzzles.ArrowResult.PASS) {
                 event.setCancelled(true);
                 return;
@@ -850,8 +1095,12 @@ public final class DungeonManager implements Listener {
                 return;
             }
         }
-        if (event.getHitEntity() instanceof org.bukkit.entity.LivingEntity target && !(target instanceof Player)
-            && event.getEntity().getShooter() instanceof Player shooter) {
+        if (hit != null && (hit instanceof Player || hit instanceof ArmorStand || !(hit instanceof org.bukkit.entity.LivingEntity)
+            || hit.isInvulnerable())) {
+            event.setCancelled(true);
+            return;
+        }
+        if (hit instanceof org.bukkit.entity.LivingEntity target && event.getEntity().getShooter() instanceof Player shooter) {
             event.setCancelled(true);
             target.damage(10_000, shooter);
         }
@@ -859,16 +1108,21 @@ public final class DungeonManager implements Listener {
     }
 
     @EventHandler
+    public void onItemDamage(org.bukkit.event.player.PlayerItemDamageEvent event) {
+        if (DungeonItems.isBreaker(plugin, event.getItem())) event.setCancelled(true);
+    }
+
+    @EventHandler
     public void onPickup(EntityPickupItemEvent event) {
         if (!(event.getEntity() instanceof Player)) return;
-        Dungeon d = dungeonOf(event.getItem().getWorld());
-        if (d != null) d.secrets.onPickup(event.getItem());
+        DungeonSecrets secrets = secretsOf(event.getItem().getWorld());
+        if (secrets != null) secrets.onPickup(event.getItem());
     }
 
     @EventHandler
     public void onDeath(EntityDeathEvent event) {
-        Dungeon d = dungeonOf(event.getEntity().getWorld());
-        if (d == null || !d.secrets.onDeath(event.getEntity())) return;
+        DungeonSecrets secrets = secretsOf(event.getEntity().getWorld());
+        if (secrets == null || !secrets.onDeath(event.getEntity())) return;
         event.getDrops().clear();
         event.setDroppedExp(0);
     }
@@ -885,12 +1139,47 @@ public final class DungeonManager implements Listener {
 
     @EventHandler
     public void onDamage(EntityDamageEvent event) {
-        if (event.getEntity() instanceof Player && dungeonOf(event.getEntity().getWorld()) != null) event.setCancelled(true);
+        if (!(event.getEntity() instanceof Player)) return;
+        if (dungeonOf(event.getEntity().getWorld()) != null
+            || (event.getCause() == EntityDamageEvent.DamageCause.SUFFOCATION && ours(event.getEntity().getWorld()))) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onPearlThrow(com.destroystokyo.paper.event.player.PlayerLaunchProjectileEvent event) {
+        if (!(event.getProjectile() instanceof org.bukkit.entity.EnderPearl) || !puzzles.noteleport(event.getPlayer().getLocation())) return;
+        event.setShouldConsume(false);
+        event.setCancelled(true);
+    }
+    private final Map<java.util.UUID, Location> pearlHits = new java.util.HashMap<>();
+
+    @EventHandler(priority = org.bukkit.event.EventPriority.MONITOR, ignoreCancelled = true)
+    public void onPearlHit(org.bukkit.event.entity.ProjectileHitEvent event) {
+        if (event.getEntity() instanceof org.bukkit.entity.EnderPearl pearl && pearl.getShooter() instanceof Player p
+            && ours(pearl.getWorld())) {
+            pearlHits.put(p.getUniqueId(), pearl.getLocation());
+        }
+    }
+
+    @EventHandler(priority = org.bukkit.event.EventPriority.HIGH, ignoreCancelled = true)
+    public void onPearlTeleport(org.bukkit.event.player.PlayerTeleportEvent event) {
+        if (event.getCause() != org.bukkit.event.player.PlayerTeleportEvent.TeleportCause.ENDER_PEARL) return;
+        Location hit = pearlHits.remove(event.getPlayer().getUniqueId());
+        if (puzzles.noteleport(event.getFrom()) || puzzles.noteleport(hit != null ? hit : event.getTo())) {
+            event.setCancelled(true);
+            return;
+        }
+        if (hit == null || !ours(hit.getWorld()) || event.getTo().getWorld() != hit.getWorld()) return;
+        Location to = hit.clone();
+        to.setYaw(event.getTo().getYaw());
+        to.setPitch(event.getTo().getPitch());
+        event.setTo(to);
     }
 
     @EventHandler
     public void onPhysics(org.bukkit.event.block.BlockPhysicsEvent event) {
-        if (ours(event.getBlock().getWorld())) event.setCancelled(true);
+        if (ours(event.getBlock().getWorld()) && !puzzles.waterAllowed(event.getBlock(), null)) event.setCancelled(true);
     }
 
     @EventHandler
@@ -900,7 +1189,7 @@ public final class DungeonManager implements Listener {
 
     @EventHandler
     public void onFlow(org.bukkit.event.block.BlockFromToEvent event) {
-        if (ours(event.getBlock().getWorld())) event.setCancelled(true);
+        if (ours(event.getBlock().getWorld()) && !puzzles.waterAllowed(event.getBlock(), event.getToBlock())) event.setCancelled(true);
     }
 
     @EventHandler

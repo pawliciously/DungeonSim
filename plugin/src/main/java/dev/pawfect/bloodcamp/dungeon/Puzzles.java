@@ -25,6 +25,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
 final class Puzzles implements Listener {
+    static final boolean WATERBOARD = false;
 
     final JavaPlugin plugin;
     final NamespacedKey key;
@@ -43,15 +44,15 @@ final class Puzzles implements Listener {
 
     void disable() {
         if (ticker != null) ticker.cancel();
-        for (List<Puzzle> list : byWorld.values()) for (Puzzle p : list) p.reset();
+        for (List<Puzzle> list : byWorld.values()) for (Puzzle p : list) p.clear();
         byWorld.clear();
     }
 
-    /** Sets up the puzzle for a room if Bloodcamp has one, else returns null. */
     Puzzle add(World world, Puzzle.Frame frame, String room, String name, int roomIndex, Consumer<Puzzle> listener) {
         Puzzle puzzle = create(world, frame, room == null ? "" : room.toLowerCase(), name, roomIndex);
         if (puzzle == null) return null;
         puzzle.listener = listener;
+        puzzle.prepare();
         byWorld.computeIfAbsent(world.getName(), w -> new ArrayList<>()).add(puzzle);
         return puzzle;
     }
@@ -66,9 +67,25 @@ final class Puzzles implements Listener {
         if (room.equals("boxes-room")) return new PuzzleBoulder(this, world, frame, room, name, roomIndex);
         if (room.equals("teleport-pad-room")) return new PuzzleTeleport(this, world, frame, room, name, roomIndex);
         if (room.equals("creeper-room")) return new PuzzleCreeper(this, world, frame, room, name, roomIndex);
+        if (room.equals("water-puzzle")) return WATERBOARD ? new PuzzleWaterboard(this, world, frame, room, name, roomIndex) : null;
         return null;
     }
 
+    boolean waterZone(Block block) {
+        for (Puzzle p : in(block.getWorld())) if (p instanceof PuzzleWaterboard w && w.waterZone(block)) return true;
+        return false;
+    }
+
+    boolean waterAllowed(Block block, Block to) {
+        if (to != null) return waterZone(block) && waterZone(to);
+        return block.getType() == org.bukkit.Material.WATER && waterZone(block);
+    }
+
+    boolean noteleport(org.bukkit.Location l) {
+        if (l == null || l.getWorld() == null) return false;
+        for (Puzzle p : in(l.getWorld())) if (p instanceof PuzzleTeleport t && t.noteleport(l)) return true;
+        return false;
+    }
     List<Puzzle> in(World world) {
         return byWorld.getOrDefault(world.getName(), List.of());
     }
@@ -84,7 +101,7 @@ final class Puzzles implements Listener {
 
     void remove(World world) {
         List<Puzzle> list = byWorld.remove(world.getName());
-        if (list != null) for (Puzzle p : list) p.reset();
+        if (list != null) for (Puzzle p : list) p.clear();
     }
 
     private void tick() {
@@ -99,7 +116,7 @@ final class Puzzles implements Listener {
                         }
                     }
                 }
-                if (p.state == Puzzle.State.ACTIVE) p.tick();
+                if (p.state == Puzzle.State.ACTIVE || (p.state == Puzzle.State.SOLVED && p.ticksWhenSolved())) p.tick();
             }
         }
     }
@@ -113,14 +130,13 @@ final class Puzzles implements Listener {
 
     enum ArrowResult { IGNORED, TAKEN, PASS }
 
-    /** An arrow from a player hit a block or entity. PASS means let it fly through a puzzle mob that isn't a target. */
-    ArrowResult arrow(Player player, Entity hitEntity, Block hitBlock) {
+    ArrowResult arrow(Player player, Entity hitEntity, Block hitBlock, boolean aimed) {
         if (hitEntity != null) {
             Puzzle owner = owner(hitEntity);
             if (owner == null) return ArrowResult.IGNORED;
             return owner.state == Puzzle.State.ACTIVE && owner.hit(player, hitEntity, false) ? ArrowResult.TAKEN : ArrowResult.PASS;
         }
-        if (hitBlock == null) return ArrowResult.IGNORED;
+        if (hitBlock == null || !aimed) return ArrowResult.IGNORED;
         for (Puzzle p : in(hitBlock.getWorld())) {
             if (p.state == Puzzle.State.ACTIVE && p.inside(hitBlock.getLocation()) && p.arrow(player, hitBlock)) return ArrowResult.TAKEN;
         }
@@ -129,7 +145,6 @@ final class Puzzles implements Listener {
 
     @EventHandler(priority = EventPriority.LOWEST)
     public void onAttack(PrePlayerAttackEntityEvent event) {
-        // Puzzle mobs are invulnerable, which stops damage events from firing at all, so catch the swing itself.
         if (!event.getAttacked().getPersistentDataContainer().has(key)) return;
         event.setCancelled(true);
         Puzzle owner = owner(event.getAttacked());
@@ -158,7 +173,6 @@ final class Puzzles implements Listener {
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onItemSpawn(org.bukkit.event.entity.ItemSpawnEvent event) {
-        // Map and practice worlds cancel every item spawn; puzzle props (the silverfish's TNT) are fine.
         if (event.getEntity().getPersistentDataContainer().has(key)) event.setCancelled(false);
     }
 

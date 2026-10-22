@@ -5,7 +5,7 @@ import { gzipSync } from "node:zlib";
 const args = process.argv.slice(2);
 const outAt = args.indexOf("--out");
 const out = outAt >= 0 ? args[outAt + 1] : null;
-const dir = args.find((a, i) => a !== "--out" && i !== outAt + 1);
+const dir = args.find((a, i) => a !== "--out" && (outAt < 0 || i !== outAt + 1));
 if (!dir || (outAt >= 0 && !out)) {
   console.error("usage: upload-secrets.mjs <secrets dir> [--out <secrets.json>]");
   process.exit(1);

@@ -11,13 +11,12 @@ import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 
-/**
- * Teleport Maze: 28 pads in seven cells, randomly linked in pairs across cells. One pad takes you to the
- * end pad, which solves it.
- */
 final class PuzzleTeleport extends Puzzle {
     private static final int Y = 69;
     private static final int[] START = {15, 12}, END = {15, 14};
+    private static final int[] CHEST = {15, 70, 20};
+    private static final double PADTOP = Y + 0.8125;
+    private static final float EXITYAW = 180f;
     private static final int[][] PADS = {
         {4, 6}, {10, 6}, {20, 6}, {26, 6}, {4, 12}, {10, 12}, {20, 12}, {26, 12},
         {4, 14}, {10, 14}, {20, 14}, {26, 14}, {4, 20}, {10, 20}, {20, 20}, {26, 20},
@@ -26,6 +25,7 @@ final class PuzzleTeleport extends Puzzle {
     private static final int[][] CENTERS = {{7, 9}, {23, 9}, {7, 17}, {23, 17}, {7, 25}, {15, 25}, {23, 25}};
 
     private final Map<Integer, int[]> links = new HashMap<>();
+    private int[] finalPad = PADS[0];
     private final Map<UUID, Integer> standing = new HashMap<>();
 
     PuzzleTeleport(Puzzles host, World world, Frame frame, String room, String name, int roomIndex) {
@@ -47,11 +47,13 @@ final class PuzzleTeleport extends Puzzle {
     @Override
     void begin() {
         links.clear();
-        int finalPad = random.nextInt(PADS.length);
-        links.put(key(PADS[finalPad]), END);
+        int finalIndex = random.nextInt(PADS.length);
+        finalPad = PADS[finalIndex];
+        links.put(key(finalPad), END);
+        links.put(key(END), START);
         List<int[]> rest = new ArrayList<>();
         rest.add(START);
-        for (int i = 0; i < PADS.length; i++) if (i != finalPad) rest.add(PADS[i]);
+        for (int i = 0; i < PADS.length; i++) if (i != finalIndex) rest.add(PADS[i]);
         for (int attempt = 0; attempt < 500; attempt++) {
             Collections.shuffle(rest, random);
             boolean ok = true;
@@ -70,6 +72,11 @@ final class PuzzleTeleport extends Puzzle {
     }
 
     @Override
+    boolean ticksWhenSolved() {
+        return true;
+    }
+
+    @Override
     void tick() {
         for (Player p : playersInside()) {
             double[] r = rel(p.getLocation());
@@ -84,13 +91,28 @@ final class PuzzleTeleport extends Puzzle {
             if (here.equals(was)) continue;
             int[] to = links.get(here);
             standing.put(p.getUniqueId(), key(to));
-            Location dest = loc(to[0] + 0.5, Y + 0.8125, to[1] + 0.5, 0f);
-            dest.setYaw(p.getLocation().getYaw());
-            dest.setPitch(p.getLocation().getPitch());
+            Location dest = loc(to[0] + 0.5, Y + 0.5, to[1] + 0.5, EXITYAW);
+            if (to != START) {
+                Location aim = loc(finalPad[0] + 0.5, Y, finalPad[1] + 0.5, 0f);
+                dest.setYaw((float) Math.toDegrees(Math.atan2(-(aim.getX() - dest.getX()), aim.getZ() - dest.getZ())));
+            }
+            dest.setPitch(0f);
             p.teleport(dest);
             p.setFallDistance(0);
             world.playSound(dest, Sound.ENTITY_ENDERMAN_TELEPORT, 0.5f, 1f);
-            if (to == END) solved(p, "found the way through the Teleport Maze!");
+            after(1, () -> {
+                Location now = p.getLocation();
+                if (!p.isOnline() || now.getWorld() != world || now.getY() >= PADTOP || Math.abs(now.getX() - dest.getX()) > 0.6 || Math.abs(now.getZ() - dest.getZ()) > 0.6) return;
+                Net.teleportKeepLook(p, now.getX(), PADTOP, now.getZ());
+                p.setFallDistance(0);
+            });
+            if (to == END && state == State.ACTIVE) {
+                set(CHEST[0], CHEST[1], CHEST[2], state("minecraft:chest[facing=north]"));
+                solved(p, "found the way through the Teleport Maze!");
+            }
         }
+    }
+    boolean noteleport(Location l) {
+        return inside(l);
     }
 }

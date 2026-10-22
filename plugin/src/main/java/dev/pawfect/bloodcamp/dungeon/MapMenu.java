@@ -59,6 +59,7 @@ final class MapMenu implements Listener {
     private static final int TYPED = 14;
     private static final int SPEED = 16;
     private static final int BACK = 22;
+    private static final int REVEAL = 24;
 
     record MapInfo(int number, String world, Seed seed, List<String> players, State state, int buildPercent,
                    long elapsedMillis, int secretsFound, int secretsTotal) {}
@@ -296,6 +297,18 @@ final class MapMenu implements Listener {
         if (speed > Speed.CAP) speedItem.setData(DataComponentTypes.ENCHANTMENT_GLINT_OVERRIDE, true);
         inv.setItem(SPEED, speedItem);
 
+        boolean reveal = manager.revealsMap(player);
+        ItemStack revealItem = item(reveal ? Material.FILLED_MAP : Material.MAP, Component.text("Reveal Map ", VALUE, TextDecoration.BOLD)
+            .append(Component.text(reveal ? "On" : "Off", reveal ? GOOD : DIM)), List.of(
+            Component.empty(),
+            Component.text("Your dungeon map shows every", LABEL),
+            Component.text("room from the start, for maps", LABEL),
+            Component.text("you build.", LABEL),
+            Component.empty(),
+            action("Click to turn " + (reveal ? "off" : "on"))));
+        if (reveal) revealItem.setData(DataComponentTypes.ENCHANTMENT_GLINT_OVERRIDE, true);
+        inv.setItem(REVEAL, revealItem);
+
         inv.setItem(BACK, item(Material.ARROW, Component.text("Back", LABEL), List.of()));
     }
 
@@ -414,6 +427,11 @@ final class MapMenu implements Listener {
                 player.sendMessage(Component.text("[Cancel]", BAD).clickEvent(ClickEvent.runCommand("/bc cancelseed"))
                     .hoverEvent(HoverEvent.showText(Component.text("Stop typing a seed"))));
                 player.sendMessage(Component.empty());
+            }
+            case REVEAL -> {
+                manager.setRevealsMap(player, !manager.revealsMap(player));
+                click(player);
+                fillCreate(holder, player);
             }
             case BACK -> {
                 click(player);

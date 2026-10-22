@@ -10,10 +10,6 @@ import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.entity.Player;
 
-/**
- * Ice Fill: three boards (3x3, 5x5, 7x7) that have to be walked over once each, start to end. Stepping
- * back onto your path or onto a tile diagonal of the last one resets that board.
- */
 final class PuzzleIceFill extends Puzzle {
     private static final class Board {
         final int ox, floorY, oz, size;

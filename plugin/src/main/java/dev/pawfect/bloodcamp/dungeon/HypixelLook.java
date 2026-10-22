@@ -119,6 +119,11 @@ final class HypixelLook {
         location(player, "bloodcamp", false);
     }
 
+    void newMap(Player player, RunState state) {
+        location(player, state.serverName(), true);
+        player.sendActionBar(Component.text("  Team Score: 0 (D)"));
+    }
+
     void forget(Player player) {
         shown.remove(player.getUniqueId());
     }
@@ -199,7 +204,7 @@ final class HypixelLook {
             " Time: §6" + (s.started() ? time(s.elapsedMillis()) : "N/A"),
             "",
             "§b§lPuzzles: §f(" + s.puzzles().size() + ")"));
-        for (String puzzle : s.puzzles()) c.add(" " + puzzle);
+        for (String puzzle : s.puzzles()) c.add("§r " + puzzle);
 
         List<String> d = List.of(
             "       §6§lAccount Info",

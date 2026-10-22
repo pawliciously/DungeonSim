@@ -15,10 +15,6 @@ import org.bukkit.entity.Blaze;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 
-/**
- * Higher or Lower: ten blazes with health tags. The high room's blazes sit below y69 and die highest
- * health first, the low room's sit above y69 and die lowest first.
- */
 final class PuzzleBlaze extends Puzzle {
     private static final int COUNT = 10;
     private static final double MAX_RADIUS = 4.5;
@@ -35,7 +31,6 @@ final class PuzzleBlaze extends Puzzle {
 
     @Override
     void begin() {
-        // A column in the middle: inside the spiral of cobblestone stairs (radius 6.4+) and under the top platform.
         int minY = highestFirst ? 21 : 71, maxY = highestFirst ? 63 : 113;
         List<int[]> spots = new ArrayList<>();
         for (int i = 0; i < COUNT; i++) {
@@ -84,7 +79,7 @@ final class PuzzleBlaze extends Puzzle {
     private static Component label(int health) {
         String hp = String.format("%,d", health);
         return Component.text("[", NamedTextColor.DARK_GRAY).append(Component.text("Lv15", NamedTextColor.GRAY))
-            .append(Component.text("] ", NamedTextColor.DARK_GRAY)).append(Component.text("Blaze ", NamedTextColor.RED))
+            .append(Component.text("]  ", NamedTextColor.DARK_GRAY)).append(Component.text("Blaze ", NamedTextColor.RED))
             .append(Component.text(hp, NamedTextColor.GREEN)).append(Component.text("/", NamedTextColor.WHITE))
             .append(Component.text(hp, NamedTextColor.GREEN)).append(Component.text("❤", NamedTextColor.RED));
     }

@@ -13,7 +13,6 @@ import org.bukkit.entity.Display;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.TextDisplay;
 
-/** Quiz (Trivia): Oruo asks three questions, answer each by pressing a button on the right pedestal. */
 final class PuzzleQuiz extends Puzzle {
     private record Question(String text, String right, List<String> wrong) {}
 
@@ -35,10 +34,6 @@ final class PuzzleQuiz extends Puzzle {
         status("Thorn", "Shaman Necromancer");
         status("Livid", "Master Necromancer");
         status("Sadan", "Necromancer Lord");
-        status("Maxor", "The Wither Lords");
-        status("Storm", "The Wither Lords");
-        status("Goldor", "The Wither Lords");
-        status("Necron", "The Wither Lords");
         status("Maxor, Storm, Goldor, and Necron", "The Wither Lords");
         q("Which brother is on the Spider's Den?", "Rick", "Pat", "Shaggy");
         q("What is the name of Rick's brother?", "Pat", "Shaggy", "Jamie");
@@ -88,7 +83,8 @@ final class PuzzleQuiz extends Puzzle {
                 t.setShadowed(true);
             });
         }
-        later(30, this::ask);
+        say(ORUO + "I am Oruo the Omniscient. I have lived many lives. I have learned all there is to know.");
+        later(220, this::ask);
     }
 
     private void ask() {
@@ -132,11 +128,13 @@ final class PuzzleQuiz extends Puzzle {
             number++;
             for (TextDisplay label : labels) label.text(net.kyori.adventure.text.Component.empty());
             if (number == 3) {
+                say(ORUO + player.getName() + " answered the final question correctly!");
                 say(ORUO + "I bestow upon you all the power of a hundred years!");
                 solved(player, "answered all of Oruo's questions!");
             } else {
                 say(ORUO + player.getName() + " answered Question #" + number + " correctly!");
-                later(40, this::ask);
+                say(ORUO + (number == 1 ? "2 questions left... Then you will have proven your worth to me!" : "One more question!"));
+                later(100, this::ask);
             }
             return true;
         }

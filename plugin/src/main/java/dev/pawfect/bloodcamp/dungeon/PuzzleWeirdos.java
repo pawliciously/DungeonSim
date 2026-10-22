@@ -10,10 +10,10 @@ import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Mannequin;
 import org.bukkit.entity.Player;
 
-/** Three Weirdos: one of three NPCs has the reward, and only that one says a "right" line. */
 final class PuzzleWeirdos extends Puzzle {
     private static final int[][] NPCS = {{13, 24}, {15, 25}, {17, 24}};
     private static final int Y = 69;
@@ -23,7 +23,6 @@ final class PuzzleWeirdos extends Puzzle {
         "Jamie", "Lino", "Lucky", "Luverne", "Madelyn", "Marston", "Melvin", "Montgomery", "Morris", "Ralph", "Rose",
         "Tyrone", "Victoria", "Virginia", "Weston", "Wilfred", "Winona");
 
-    // Lines the reward holder can say. Solvers match these exactly, so keep the wording.
     private static final List<String> RIGHT = List.of(
         "The reward is not in my chest!",
         "The reward isn't in any of our chests.",
@@ -44,6 +43,7 @@ final class PuzzleWeirdos extends Puzzle {
     private final String[] names = new String[3];
     private final String[] lines = new String[3];
     private final Mannequin[] npcs = new Mannequin[3];
+    private final ArmorStand[] stands = new ArmorStand[3];
     private int reward;
 
     PuzzleWeirdos(Puzzles host, World world, Frame frame, String room, String name, int roomIndex) {
@@ -72,6 +72,14 @@ final class PuzzleWeirdos extends Puzzle {
                 m.customName(Component.text(names[index], NamedTextColor.YELLOW));
                 m.setCustomNameVisible(true);
             });
+            org.bukkit.block.Block at = block(NPCS[i][0], Y, NPCS[i][1]);
+            stands[i] = spawn(new org.bukkit.Location(world, at.getX() + 1, Y, at.getZ() + 1), ArmorStand.class, s -> {
+                s.setInvisible(true);
+                s.setSmall(true);
+                s.setGravity(false);
+                s.customName(Component.text(names[index]));
+                s.setCustomNameVisible(false);
+            });
             set(NPCS[i][0] + 1, Y, NPCS[i][1], state("minecraft:chest[facing=north]"));
         }
     }
@@ -79,7 +87,7 @@ final class PuzzleWeirdos extends Puzzle {
     @Override
     boolean interact(Player player, Entity entity) {
         for (int i = 0; i < 3; i++) {
-            if (npcs[i] != entity) continue;
+            if (npcs[i] != entity && stands[i] != entity) continue;
             player.sendMessage(Component.text("[NPC] ", NamedTextColor.YELLOW).append(Component.text(names[i] + ": ", NamedTextColor.WHITE))
                 .append(Component.text(lines[i], NamedTextColor.WHITE)));
             player.playSound(entity.getLocation(), Sound.ENTITY_VILLAGER_AMBIENT, 0.6f, 1f);

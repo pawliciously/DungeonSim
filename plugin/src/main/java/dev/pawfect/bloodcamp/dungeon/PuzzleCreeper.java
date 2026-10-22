@@ -16,11 +16,6 @@ import org.bukkit.entity.Creeper;
 import org.bukkit.entity.Player;
 import org.bukkit.util.Vector;
 
-/**
- * Creeper Beams: shoot (or hit) two sea lanterns to join them with a beam. The beam counts when the line
- * between the lantern centres goes through the creeper's column, the box Skytils checks: the creeper's
- * block from y75 to y78. Four beams solve it. Only lanterns above y68 count, like the solvers.
- */
 final class PuzzleCreeper extends Puzzle {
     private static final int BASE_X = 15, BASE_Y = 74, BASE_Z = 15;
     private static final int BEAMS = 4;
@@ -63,7 +58,6 @@ final class PuzzleCreeper extends Puzzle {
         lastHit.clear();
     }
 
-    /** Segment between block centres against the box x 15..16, y 75..78, z 15..16 (slab test). */
     private static boolean throughCreeper(int[] a, int[] b) {
         double[] lo = {BASE_X, BASE_Y + 1, BASE_Z}, hi = {BASE_X + 1, BASE_Y + 4, BASE_Z + 1};
         double t0 = 0, t1 = 1;
@@ -105,7 +99,6 @@ final class PuzzleCreeper extends Puzzle {
     }
 
     private void pick(Player player, int[] l) {
-        // One Terminator shot is 3 arrows plus the duplex one, so only the first lantern hit of a volley counts.
         long now = System.currentTimeMillis();
         Long last = lastHit.get(player.getUniqueId());
         if (last != null && now - last < VOLLEY_MS) return;
@@ -127,6 +120,7 @@ final class PuzzleCreeper extends Puzzle {
         world.playSound(creeper.getLocation(), Sound.ENTITY_GUARDIAN_ATTACK, 0.7f, 1.2f);
         if (made.size() >= BEAMS) {
             set(BASE_X, BASE_Y, BASE_Z, Material.STONE_BRICKS);
+            if (block(15, 69, 15).isEmpty()) set(15, 69, 15, state("minecraft:chest[facing=south]"));
             forget(creeper);
             solved(player, "connected all the Creeper Beams!");
         }

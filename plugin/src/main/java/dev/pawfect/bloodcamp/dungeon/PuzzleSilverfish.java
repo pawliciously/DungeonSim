@@ -14,11 +14,9 @@ import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Silverfish;
 
-/** Ice Path: hit the silverfish and it slides away from you until it hits something. Get it to the exit. */
 final class PuzzleSilverfish extends Puzzle {
     private static final int SIZE = 17;
     private static final int FLOOR_Y = 66;
-    // Seen on Hypixel 2026-10-18 (PA entityinfo): spawns at room 9 67 9, with a dropped TNT riding it.
     private static final int START_ROW = 24 - 9, START_COL = 23 - 9;
     private static final int[][] DIRS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
 
@@ -47,7 +45,6 @@ final class PuzzleSilverfish extends Puzzle {
     @Override
     void begin() {
         for (int r = 0; r < SIZE; r++) for (int c = 0; c < SIZE; c++) blocked[r][c] = !block(x(c), FLOOR_Y + 1, z(r)).isEmpty();
-        // Hypixel's start cell, or the closest one that can still reach the gate if the board blocks it.
         int[] start = null;
         int bestScore = Integer.MAX_VALUE;
         for (int r = 0; r < SIZE; r++) for (int c = 0; c < SIZE; c++) {
@@ -81,7 +78,6 @@ final class PuzzleSilverfish extends Puzzle {
         return loc(x(0) - col + 0.5, FLOOR_Y + 1, z(0) - row + 0.5, 0f);
     }
 
-    /** Fewest hits to reach the exit from here, or -1. */
     private int distance(int fromRow, int fromCol) {
         int[][] seen = new int[SIZE][SIZE];
         for (int[] s : seen) java.util.Arrays.fill(s, -1);
@@ -113,7 +109,6 @@ final class PuzzleSilverfish extends Puzzle {
     boolean hit(Player player, Entity entity, boolean melee) {
         if (entity != fish) return false;
         if (!path.isEmpty() || leaving) return true;
-        // It goes the way you're facing, for hits and arrows alike.
         Location f = fish.getLocation();
         double yaw = Math.toRadians(player.getLocation().getYaw());
         double[] d = frame.rotate(-Math.sin(yaw), Math.cos(yaw), -frame.turns());

@@ -50,10 +50,10 @@ final class DungeonItems {
     private static final byte BREAKER = 8;
     private static final byte TERMINATOR = 9;
     private static final byte SCEPTRE = 10;
-    private static final long TERMINATOR_COOLDOWN_MS = 200;
+    private static final int TERMINATOR_COOLDOWN_TICKS = 4;
     private static final double TERMINATOR_SPREAD = Math.toRadians(5);
     private static final float ARROW_SPEED = 3.0f;
-    private static final Map<UUID, Long> lastShot = new ConcurrentHashMap<>();
+    private static final Map<UUID, Integer> lastShot = new ConcurrentHashMap<>();
 
     private static final double EYE = 1.62;
     private static final double EYE_SNEAKING = 1.54;
@@ -69,8 +69,8 @@ final class DungeonItems {
     private static final double BAT_SPEED = 0.8;
     private static final int BAT_LIFETIME = 80;
     private static final double BAT_BLAST = 6;
-    private static final long SCEPTRE_COOLDOWN_MS = 250;
-    private static final Map<UUID, Long> lastSceptre = new ConcurrentHashMap<>();
+    private static final int MAX_BATS = 15;
+    private static final Map<UUID, Integer> flying = new ConcurrentHashMap<>();
 
     private static final Map<UUID, Long> lastUse = new ConcurrentHashMap<>();
     private static final Map<UUID, Integer> charges = new ConcurrentHashMap<>();
@@ -158,8 +158,10 @@ final class DungeonItems {
     }
 
     static ItemStack terminator(JavaPlugin plugin) {
-        ItemStack stack = new ItemStack(Material.BOW);
+        ItemStack stack = new ItemStack(Material.STICK);
         ItemMeta meta = stack.getItemMeta();
+        meta.setItemModel(NamespacedKey.minecraft("bow"));
+        meta.setMaxStackSize(1);
         meta.displayName(Component.text("Terminator", NamedTextColor.GOLD).decoration(TextDecoration.ITALIC, false));
         meta.lore(lore("""
             §d§lDuplex V
@@ -203,10 +205,10 @@ final class DungeonItems {
     }
 
     static void useSceptre(JavaPlugin plugin, Player player) {
-        long now = System.currentTimeMillis();
-        Long last = lastSceptre.get(player.getUniqueId());
-        if (last != null && now - last < SCEPTRE_COOLDOWN_MS) return;
-        lastSceptre.put(player.getUniqueId(), now);
+        UUID id = player.getUniqueId();
+        if (flying.getOrDefault(id, 0) >= MAX_BATS) return;
+        flying.merge(id, 1, Integer::sum);
+        track.accept(player, "sceptre");
         World world = player.getWorld();
         Location eye = player.getEyeLocation();
         Location start = eye.clone().add(eye.getDirection().multiply(0.6)).subtract(0, 0.45, 0);
@@ -225,6 +227,11 @@ final class DungeonItems {
         new org.bukkit.scheduler.BukkitRunnable() {
             int age;
 
+            @Override
+            public void cancel() {
+                super.cancel();
+                flying.computeIfPresent(id, (k, v) -> v > 1 ? v - 1 : null);
+            }
             @Override
             public void run() {
                 if (!bat.isValid() || !player.isOnline() || player.getWorld() != world) {
@@ -285,10 +292,11 @@ final class DungeonItems {
     }
 
     static void shootTerminator(JavaPlugin plugin, Player player) {
-        long now = System.currentTimeMillis();
-        Long last = lastShot.get(player.getUniqueId());
-        if (last != null && now - last < TERMINATOR_COOLDOWN_MS) return;
+        int now = Bukkit.getCurrentTick();
+        Integer last = lastShot.get(player.getUniqueId());
+        if (last != null && now - last < TERMINATOR_COOLDOWN_TICKS) return;
         lastShot.put(player.getUniqueId(), now);
+        track.accept(player, "terminator");
         Location eye = player.getEyeLocation();
         Vector look = eye.getDirection();
         for (double angle : new double[] {-TERMINATOR_SPREAD, 0, TERMINATOR_SPREAD}) {
@@ -446,6 +454,7 @@ final class DungeonItems {
         int have = charges.getOrDefault(player.getUniqueId(), MAX_CHARGES);
         if (have <= 0) return false;
         setCharges(plugin, player, have - 1);
+        track.accept(player, "breaker");
         return true;
     }
 
@@ -471,12 +480,14 @@ final class DungeonItems {
         if (!ready(player, 50)) return;
         if (player.isSneaking()) etherwarp(player);
         else if (instant(player, INSTANT_RANGE) != null) {
+            track.accept(player, "teleports");
             player.getWorld().playSound(player.getLocation(), Sound.ENTITY_ENDERMAN_TELEPORT, 1f, 1f);
         }
     }
 
     static void useHyperion(Player player) {
         if (!ready(player, HYPERION_COOLDOWN_MS)) return;
+        track.accept(player, "hyperion");
         instant(player, WITHER_IMPACT_RANGE);
         Location at = player.getLocation();
         World world = player.getWorld();
@@ -499,6 +510,7 @@ final class DungeonItems {
     }
 
     static java.util.function.Predicate<Location> noteleport = l -> false;
+    static java.util.function.BiConsumer<Player, String> track = (p, k) -> { };
     private static Location instant(Player player, int range) {
         Location from = player.getLocation();
         if (noteleport.test(from)) return null;
@@ -522,6 +534,7 @@ final class DungeonItems {
         if (noteleport.test(to)) return null;
         Net.teleportKeepLook(player, to.getX(), to.getY(), to.getZ());
         player.setFallDistance(0);
+        track.accept(player, "etherwarps");
         return to;
     }
 

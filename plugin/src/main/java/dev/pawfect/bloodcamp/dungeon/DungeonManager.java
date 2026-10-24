@@ -57,6 +57,7 @@ public final class DungeonManager implements Listener {
     private final JavaPlugin plugin;
     private final RoomLibrary library;
     private final Times times;
+    private final Stats stats;
     private final NamespacedKey previousMode;
     private final Map<String, Dungeon> dungeons = new HashMap<>();
     private final Map<String, DungeonSecrets> practiceSecrets = new HashMap<>();
@@ -97,6 +98,7 @@ public final class DungeonManager implements Listener {
         boolean bloodKey, bloodDoorOpened;
         boolean custom;
         final Map<java.util.UUID, Integer> runSpeed = new HashMap<>();
+        final Map<java.util.UUID, Integer> runsecrets = new HashMap<>();
         final List<org.bukkit.entity.BlockDisplay> sliding = new java.util.ArrayList<>();
         int resets;
 
@@ -131,18 +133,24 @@ public final class DungeonManager implements Listener {
         this.plugin = plugin;
         this.library = new RoomLibrary(plugin.getDataFolder().toPath(), plugin.getLogger());
         this.times = new Times(plugin.getDataFolder().toPath().resolve("clears.yml").toFile(), plugin.getLogger());
+        this.stats = new Stats(plugin.getDataFolder().toPath().resolve("stats.yml").toFile(), plugin.getLogger(), times::of);
+        DungeonItems.track = stats::add;
         Speed.init(plugin);
         this.previousMode = new NamespacedKey(plugin, "previous_gamemode");
         this.parkourBest = new NamespacedKey(plugin, "parkour_best");
         classKey = new NamespacedKey(plugin, "dungeon_class");
         this.puzzles = new Puzzles(plugin);
         DungeonItems.noteleport = puzzles::noteleport;
+        puzzles.onSolved = (p, name, millis) -> {
+            stats.add(p, "puzzles");
+            stats.fastest(p, name, millis);
+        };
         this.loadout = new Loadout(plugin, p -> {
             if (ours(p.getWorld()) && !inRun(p)) DungeonItems.giveKit(plugin, p);
         });
         this.viewer = new RoomViewer(plugin, library, this);
         this.mushrooms = new MushroomRoom(plugin);
-        this.menu = new MapMenu(plugin, this, times);
+        this.menu = new MapMenu(plugin, this, times, stats);
         this.rooms = new RoomMenu(plugin, library, viewer);
         this.lobby = new Lobby(plugin, menu::open, rooms::open, times);
     }
@@ -181,6 +189,7 @@ public final class DungeonManager implements Listener {
 
     public void disable() {
         if (ticker != null) ticker.cancel();
+        stats.save();
         puzzles.disable();
         viewer.disable();
         menu.disable();
@@ -314,6 +323,16 @@ public final class DungeonManager implements Listener {
         pendingSeed = null;
         pendingNumber = -1;
         dungeon.map.onOpen = room -> keyPickup(dungeon, room);
+        dungeon.secrets.onFound = (p, kind) -> {
+            stats.add(p, "secrets");
+            stats.add(p, switch (kind) {
+                case CHEST -> "chests";
+                case ITEM -> "items";
+                case BAT -> "bats";
+                default -> "essence";
+            });
+            stats.max(p, "bestsecrets", dungeon.runsecrets.merge(p.getUniqueId(), 1, Integer::sum));
+        };
         dungeons.put(world.getName(), dungeon);
 
         DungeonPlan.Writes writes = plan.writes;
@@ -567,6 +586,7 @@ public final class DungeonManager implements Listener {
             d.open[i] = false;
         }
         d.startedAt = -1;
+        d.runsecrets.clear();
         d.finishedMillis = -1;
         d.finished = false;
         d.secrets.reset();
@@ -578,7 +598,9 @@ public final class DungeonManager implements Listener {
         d.bloodDoorOpened = false;
         d.actor = null;
         d.runSpeed.clear();
+        d.runsecrets.clear();
         for (Player p : d.world.getPlayers()) {
+            stats.add(p, "runs");
             p.teleportAsync(d.spawn());
             DungeonItems.giveKit(plugin, p);
         }
@@ -629,6 +651,7 @@ public final class DungeonManager implements Listener {
 
     private void tick() {
         ticks++;
+        if (ticks % 1200 == 0) stats.save();
         Net.tickPings();
         if (ticks % 10 == 0) brandTick();
         for (Dungeon d : dungeons.values()) {
@@ -870,6 +893,9 @@ public final class DungeonManager implements Listener {
             Times.Clear floorBest = times.best(p.getUniqueId(), Times.onFloor(floor));
             int speed = d.runSpeed.get(p.getUniqueId());
             times.add(new Times.Clear(p.getUniqueId(), p.getName(), seed, floor, millis, speed, runners.size(), now));
+            stats.add(p, "clears");
+            stats.add(p, "clearms", millis);
+            stats.min(p, "pb", millis);
             String vsSeed = seedBest == null ? "first clear on this seed" : millis < seedBest.millis() ? "new best, was " + Times.format(seedBest.millis()) : "best is " + Times.format(seedBest.millis());
             p.sendMessage(Component.text(time + " on ", NamedTextColor.GREEN).append(code(d.seed))
                 .append(Component.text(" at \u2726" + speed + " (" + vsSeed + ")", NamedTextColor.GRAY)));
@@ -1116,13 +1142,18 @@ public final class DungeonManager implements Listener {
     public void onPickup(EntityPickupItemEvent event) {
         if (!(event.getEntity() instanceof Player)) return;
         DungeonSecrets secrets = secretsOf(event.getItem().getWorld());
-        if (secrets != null) secrets.onPickup(event.getItem());
+        if (secrets != null) secrets.onPickup(event.getItem(), (Player) event.getEntity());
     }
 
     @EventHandler
     public void onDeath(EntityDeathEvent event) {
+        Player killer = event.getEntity().getKiller();
+        Dungeon d = dungeonOf(event.getEntity().getWorld());
+        if (d != null && killer != null && event.getEntity() instanceof org.bukkit.entity.Monster) stats.add(killer, "mobs");
+        boolean mimic = d != null && d.secrets.mimicKilled();
         DungeonSecrets secrets = secretsOf(event.getEntity().getWorld());
         if (secrets == null || !secrets.onDeath(event.getEntity())) return;
+        if (d != null && killer != null && !mimic && d.secrets.mimicKilled()) stats.add(killer, "mimics");
         event.getDrops().clear();
         event.setDroppedExp(0);
     }

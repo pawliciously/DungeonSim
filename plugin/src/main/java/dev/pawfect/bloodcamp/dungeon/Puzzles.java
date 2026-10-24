@@ -31,6 +31,10 @@ final class Puzzles implements Listener {
     final NamespacedKey key;
     private final Map<String, List<Puzzle>> byWorld = new HashMap<>();
     private BukkitTask ticker;
+    interface Solved {
+        void solved(Player by, String name, long millis);
+    }
+    Solved onSolved = (p, n, ms) -> { };
 
     Puzzles(JavaPlugin plugin) {
         this.plugin = plugin;

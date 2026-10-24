@@ -90,6 +90,7 @@ final class DungeonSecrets {
     private final Map<java.util.UUID, Long> lastBoom = new HashMap<>();
     private final Map<Long, Broken> broken = new LinkedHashMap<>();
     private java.util.UUID mimic;
+    java.util.function.BiConsumer<Player, SecretKind> onFound = (p, k) -> { };
     private boolean mimicKilled;
     private final RoomLibrary.Mimic mimicLook;
     private final int mimicIndex;
@@ -241,7 +242,8 @@ final class DungeonSecrets {
 
     boolean breakTemporarily(Block block) {
         Material type = block.getType();
-        if (type.isAir() || block.isLiquid() || type == Material.BARRIER || type == Material.BEDROCK) return false;
+        if (type.isAir() || block.isLiquid() || type == Material.BARRIER || type == Material.BEDROCK || type == Material.LEVER
+            || type == Material.CHEST || type == Material.TRAPPED_CHEST) return false;
         long key = key(block.getX(), block.getY(), block.getZ());
         if (blockSecrets.containsKey(key) || keySlots.containsKey(key)) return false;
         BlockState state = block.getState();
@@ -352,11 +354,13 @@ final class DungeonSecrets {
         return n;
     }
 
-    private void markFound(int index) {
+    private void markFound(int index, Player by) {
         if (found[index]) return;
         found[index] = true;
         Secret s = secrets.get(index);
-        if (s.kind().counted()) foundIn[s.placement()]++;
+        if (!s.kind().counted()) return;
+        foundIn[s.placement()]++;
+        if (by != null) onFound.accept(by, s.kind());
     }
 
     boolean onClick(Player player, Block block, boolean rightClick) {
@@ -371,7 +375,7 @@ final class DungeonSecrets {
                     remember(block);
                     block.setType(Material.AIR, false);
                     world.playSound(block.getLocation().add(0.5, 0.5, 0.5), Sound.ENTITY_BAT_TAKEOFF, 0.6f, 1.6f);
-                    markFound(index);
+                    markFound(index, player);
                 }
                 case KEY -> {
                     if (!isHead(block)) return false;
@@ -379,7 +383,7 @@ final class DungeonSecrets {
                     block.setType(Material.AIR, false);
                     player.getInventory().addItem(redstoneKey());
                     world.playSound(block.getLocation().add(0.5, 0.5, 0.5), Sound.ENTITY_ITEM_PICKUP, 0.6f, 1f);
-                    markFound(index);
+                    markFound(index, player);
                 }
                 default -> {
                     return false;
@@ -398,7 +402,7 @@ final class DungeonSecrets {
             ItemStack hand = player.getInventory().getItemInMainHand();
             hand.setAmount(hand.getAmount() - 1);
             world.playSound(head.getLocation().add(0.5, 0.5, 0.5), Sound.BLOCK_END_PORTAL_FRAME_FILL, 0.8f, 1f);
-            markFound(slot);
+            markFound(slot, player);
             return true;
         }
         if (rightClick) rememberIfToggled(block);
@@ -414,7 +418,7 @@ final class DungeonSecrets {
             player.sendMessage(Component.text("This chest has already been searched!", NamedTextColor.RED));
             return;
         }
-        markFound(index);
+        markFound(index, player);
         if (index == mimicIndex) {
             remember(block);
             block.setType(Material.AIR, false);
@@ -482,18 +486,18 @@ final class DungeonSecrets {
                 p.getInventory().addItem(item.getItemStack());
                 p.playPickupItemAnimation(item);
                 world.playSound(item.getLocation(), Sound.ENTITY_ITEM_PICKUP, 0.2f, 1.6f + (float) Math.random() * 0.4f);
-                onPickup(item);
+                onPickup(item, p);
                 item.remove();
                 break;
             }
         }
     }
 
-    void onPickup(Item item) {
+    void onPickup(Item item, Player player) {
         Integer index = item.getPersistentDataContainer().get(tag, PersistentDataType.INTEGER);
         if (index == null || index < 0 || index >= found.length) return;
         entities.remove(item.getUniqueId());
-        markFound(index);
+        markFound(index, player);
     }
 
     boolean onDeath(Entity entity) {
@@ -505,7 +509,7 @@ final class DungeonSecrets {
         Integer index = entity.getPersistentDataContainer().get(tag, PersistentDataType.INTEGER);
         if (index == null || index < 0 || index >= found.length) return false;
         entities.remove(entity.getUniqueId());
-        markFound(index);
+        markFound(index, entity instanceof org.bukkit.entity.LivingEntity living ? living.getKiller() : null);
         return true;
     }
 

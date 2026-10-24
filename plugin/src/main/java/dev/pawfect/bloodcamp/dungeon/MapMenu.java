@@ -51,7 +51,12 @@ final class MapMenu implements Listener {
     private static final int[] SLOTS = {11, 12, 13, 14, 15, 20, 21, 22, 23, 24, 29, 30, 31, 32, 33};
     private static final int HEADER = 4;
     private static final int CREATE = 48;
-    private static final int CLOSE = 50;
+    private static final int CLOSE = 52;
+    private static final int STATS = 50;
+    private static final int RUNS = 10;
+    private static final int SECRETS = 12;
+    private static final int ITEMS = 14;
+    private static final int COMBAT = 16;
     private static final int LOADOUT = 46;
 
     private static final int RANDOM = 10;
@@ -66,7 +71,7 @@ final class MapMenu implements Listener {
 
     enum State { BUILDING, WAITING, RUNNING, FINISHED }
 
-    private enum Page { BROWSE, CREATE }
+    private enum Page { BROWSE, CREATE, STATS }
 
     private static final class Holder implements InventoryHolder {
         final Page page;
@@ -87,13 +92,15 @@ final class MapMenu implements Listener {
     private final JavaPlugin plugin;
     private final DungeonManager manager;
     private final Times times;
+    private final Stats stats;
     private final Map<UUID, Long> typing = new HashMap<>();
     private BukkitTask ticker;
 
-    MapMenu(JavaPlugin plugin, DungeonManager manager, Times times) {
+    MapMenu(JavaPlugin plugin, DungeonManager manager, Times times, Stats stats) {
         this.plugin = plugin;
         this.manager = manager;
         this.times = times;
+        this.stats = stats;
     }
 
     void enable() {
@@ -123,6 +130,67 @@ final class MapMenu implements Listener {
         player.openInventory(holder.inventory);
     }
 
+    private void openStats(Player player) {
+        Holder holder = new Holder(Page.STATS);
+        holder.inventory = Bukkit.createInventory(holder, 27, title("Your Stats"));
+        fillStats(holder, player);
+        player.openInventory(holder.inventory);
+        player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.4f, 1.4f);
+    }
+    private void fillStats(Holder holder, Player player) {
+        Inventory inv = holder.inventory;
+        ItemStack border = filler(Material.BLACK_STAINED_GLASS_PANE);
+        ItemStack inner = filler(Material.GRAY_STAINED_GLASS_PANE);
+        for (int i = 0; i < inv.getSize(); i++) inv.setItem(i, i / 9 == 1 ? inner : border);
+        Stats.Entry s = stats.of(player.getUniqueId());
+        long runs = s.get("runs"), clears = s.get("clears"), secrets = s.get("secrets");
+        ItemStack head = item(Material.PLAYER_HEAD, Component.text(player.getName(), TITLE, TextDecoration.BOLD), List.of(Component.text("All-time stats", LABEL)));
+        head.editMeta(org.bukkit.inventory.meta.SkullMeta.class, m -> m.setOwningPlayer(player));
+        inv.setItem(HEADER, head);
+        inv.setItem(RUNS, item(Material.CLOCK, Component.text("Runs", GOOD, TextDecoration.BOLD), List.of(
+            Component.empty(),
+            line("Runs started", number(runs)),
+            line("Runs finished", number(clears)),
+            Component.empty(),
+            line("Personal best", s.has("pb") ? Component.text(Times.format(s.get("pb")), GOLD) : none()),
+            line("Average clear", clears > 0 ? Component.text(Times.format(s.get("clearms") / clears), VALUE) : none()))));
+        inv.setItem(SECRETS, item(Material.CHEST, Component.text("Secrets", SEED, TextDecoration.BOLD), List.of(
+            Component.empty(),
+            line("Secrets found", number(secrets)),
+            line("Best in one run", number(s.get("bestsecrets"))),
+            line("Average per run", runs > 0 ? Component.text(String.format("%.1f", secrets / (double) runs), VALUE) : none()),
+            Component.empty(),
+            line("Chests", number(s.get("chests"))),
+            line("Items", number(s.get("items"))),
+            line("Bats", number(s.get("bats"))),
+            line("Wither essence", number(s.get("essence"))))));
+        inv.setItem(ITEMS, item(Material.ENDER_PEARL, Component.text("Items", WARN, TextDecoration.BOLD), List.of(
+            Component.empty(),
+            line("Etherwarps", number(s.get("etherwarps"))),
+            line("AOTV teleports", number(s.get("teleports"))),
+            line("Hyperion casts", number(s.get("hyperion"))),
+            line("Sceptre bats", number(s.get("sceptre"))),
+            line("Terminator shots", number(s.get("terminator"))),
+            line("Blocks broken", number(s.get("breaker"))))));
+        List<Component> combat = new ArrayList<>(List.of(
+            Component.empty(),
+            line("Mobs killed", number(s.get("mobs"))),
+            line("Mimics killed", number(s.get("mimics"))),
+            line("Puzzles solved", number(s.get("puzzles"))),
+            Component.empty(),
+            Component.text("Fastest solves", LABEL)));
+        if (s.fastest.isEmpty()) combat.add(Component.text("  None yet", DIM));
+        s.fastest.values().stream().sorted(java.util.Comparator.comparing(Stats.Fastest::name))
+            .forEach(f -> combat.add(Component.text("  " + f.name() + ": ", LABEL).append(Component.text(Times.format(f.millis()), GOLD))));
+        inv.setItem(COMBAT, item(Material.BLAZE_ROD, Component.text("Mobs and Puzzles", BAD, TextDecoration.BOLD), combat));
+        inv.setItem(BACK, item(Material.ARROW, Component.text("Back", LABEL), List.of()));
+    }
+    private static Component number(long n) {
+        return Component.text(String.format("%,d", n), VALUE);
+    }
+    private static Component none() {
+        return Component.text("none yet", DIM);
+    }
     private static Component title(String text) {
         return Component.text(text, NamedTextColor.DARK_GRAY);
     }
@@ -186,6 +254,8 @@ final class MapMenu implements Listener {
                 ? List.of(Component.empty(), Component.text(maps.size() >= MAX_MAPS ? "All 15 slots are taken." : "A map is building, one moment.", BAD))
                 : List.of(Component.empty(), Component.text("Set your speed, then roll a", LABEL), Component.text("seed, play the daily or", LABEL), Component.text("type one in.", LABEL), Component.empty(), action("Click to start"))));
         inv.setItem(CLOSE, item(Material.BARRIER, Component.text("Close", BAD), List.of()));
+        inv.setItem(STATS, item(Material.WRITABLE_BOOK, Component.text("Stats", TITLE, TextDecoration.BOLD), List.of(Component.empty(),
+            Component.text("Your runs, secrets, items", LABEL), Component.text("and puzzle times.", LABEL), Component.empty(), action("Click to view"))));
         inv.setItem(LOADOUT, item(Material.CHEST, Component.text("Loadout", TITLE, TextDecoration.BOLD), List.of(Component.empty(),
             Component.text("Pick which items you bring", LABEL), Component.text("and where they go in your", LABEL),
             Component.text("inventory. Used for runs", LABEL), Component.text("and practice rooms.", LABEL), Component.empty(), action("Click to edit"))));
@@ -320,6 +390,9 @@ final class MapMenu implements Listener {
         if (event.getClickedInventory() != event.getView().getTopInventory()) return;
         int slot = event.getRawSlot();
         if (holder.page == Page.BROWSE) clickBrowse(player, holder, slot, event.getClick());
+        else if (holder.page == Page.STATS) {
+            if (slot == BACK) open(player);
+        }
         else clickCreate(player, holder, slot, event.getClick());
     }
 
@@ -331,6 +404,10 @@ final class MapMenu implements Listener {
     private void clickBrowse(Player player, Holder holder, int slot, ClickType click) {
         if (slot == CLOSE) {
             player.closeInventory();
+            return;
+        }
+        if (slot == STATS) {
+            openStats(player);
             return;
         }
         if (slot == CREATE) {

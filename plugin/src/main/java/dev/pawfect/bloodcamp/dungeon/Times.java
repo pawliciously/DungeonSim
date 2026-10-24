@@ -70,6 +70,10 @@ final class Times {
         return best;
     }
 
+    synchronized List<Clear> of(UUID player) {
+        return clears.stream().filter(c -> c.player().equals(player)).toList();
+    }
+
     synchronized List<Clear> top(Predicate<Clear> which, int limit) {
         Map<UUID, Clear> perPlayer = new HashMap<>();
         for (Clear c : clears) {

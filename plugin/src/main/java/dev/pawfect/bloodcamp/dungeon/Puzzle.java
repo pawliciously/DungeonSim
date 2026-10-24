@@ -181,8 +181,10 @@ abstract class Puzzle {
     final void solved(Player by, String what) {
         if (state != State.ACTIVE) return;
         state = State.SOLVED;
+        long millis = (System.nanoTime() - startedAt) / 1_000_000;
         say("§a§lPUZZLE SOLVED! §r§e" + by.getName() + " §r§b" + what + " §r" + GOOD_JOB);
-        say("§8" + name + " in " + Times.format((System.nanoTime() - startedAt) / 1_000_000));
+        say("§8" + name + " in " + Times.format(millis));
+        host.onSolved.solved(by, name, millis);
         for (Player p : world.getPlayers()) p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.7f, 1.2f);
         changed();
     }
